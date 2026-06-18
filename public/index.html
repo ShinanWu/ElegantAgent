@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cursor Agent · π</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="/static/vendor/marked.min.js"></script>
+    <script src="/static/vendor/highlight.min.js"></script>
+    <link rel="stylesheet" href="/static/vendor/highlight.github-dark.min.css" />
+  </head>
+  <body>
+    <header id="header">
+      <div id="header-left">
+        <h1><span class="pi">π</span> <span id="header-agent-name">Cursor Agent</span></h1>
+        <span id="status-dot" title="连接状态"></span>
+      </div>
+      <div id="header-center">
+        <div id="model-badge" class="badge" title="切换模型">
+          <span class="dot"></span>
+          <span id="model-name">composer-2.5</span>
+        </div>
+      </div>
+      <div id="toolbar">
+        <button id="btn-discuss-toggle" class="icon-btn" title="讨论侧栏">💬</button>
+        <button id="btn-system-settings" class="icon-btn" title="系统设置">⚙</button>
+      </div>
+    </header>
+
+    <div id="body-wrap">
+      <aside id="sidebar">
+        <div id="sidebar-header">
+          <button id="btn-new-agent">＋ 新 Agent</button>
+        </div>
+        <div id="agent-list"></div>
+      </aside>
+
+      <main id="main">
+        <div id="messages-wrap">
+          <div id="messages">
+            <div class="empty-state">
+              <p>正在连接 Agent…</p>
+            </div>
+          </div>
+          <div id="context-menu" class="context-menu hidden" role="menu">
+            <button type="button" class="context-menu-item" data-action="copy" role="menuitem">复制</button>
+            <button type="button" class="context-menu-item" data-action="paste" role="menuitem">粘贴</button>
+            <button type="button" class="context-menu-item" data-action="discuss" role="menuitem">讨论选中内容</button>
+          </div>
+          <div id="run-status-bar" class="hidden">
+            <span id="run-status-text" class="run-status-label running">Agent 运行中…</span>
+            <button id="btn-stop-run" type="button" tabindex="-1">停止</button>
+          </div>
+        </div>
+
+        <div id="composer-wrap">
+          <div id="composer">
+            <div
+              id="message-input"
+              class="composer-editor"
+              contenteditable="true"
+              role="textbox"
+              aria-multiline="true"
+              data-placeholder="输入消息…（Enter 发送，Shift+Enter 换行；图片插入在光标处）"
+            ></div>
+            <button id="btn-send">发送</button>
+          </div>
+        </div>
+      </main>
+
+      <aside id="discuss-rail" class="collapsed">
+        <div id="discuss-header">
+          <span>讨论</span>
+          <button id="btn-discuss-close" class="icon-btn" title="收起">×</button>
+        </div>
+        <div id="discussion-panels"></div>
+      </aside>
+    </div>
+
+    <div id="agent-drawer" class="drawer-backdrop">
+      <div class="drawer-panel">
+        <div class="drawer-header">
+          <h2>Agent 设置</h2>
+          <button id="btn-drawer-close" class="icon-btn">×</button>
+        </div>
+        <div class="drawer-body">
+          <label class="field-label" for="agent-name-input">名称</label>
+          <input id="agent-name-input" type="text" />
+
+          <label class="field-label" for="agent-cwd-input">工作目录</label>
+          <div class="path-row">
+            <input id="agent-cwd-input" type="text" readonly placeholder="点击右侧按钮选择目录" />
+            <button id="btn-pick-cwd" type="button" class="secondary-btn">选择…</button>
+            <button id="btn-clear-cwd" type="button" class="secondary-btn subtle-btn" title="置空">清除</button>
+          </div>
+
+          <label class="field-label" for="agent-model-input">模型</label>
+          <input id="agent-model-input" type="text" />
+
+          <div class="toggle-row">
+            <label><input type="checkbox" id="toggle-soul" /> 注入 Soul</label>
+            <label><input type="checkbox" id="toggle-rules" /> 注入 Rules</label>
+            <label><input type="checkbox" id="toggle-skills" /> 注入 Skills</label>
+            <label><input type="checkbox" id="toggle-memory" /> 注入 Memory</label>
+          </div>
+
+          <label class="field-label" for="soul-editor">Soul（自然语言设定）</label>
+          <div class="soul-section">
+            <textarea id="soul-editor" rows="12" placeholder="描述 Agent 的身份、职责与行为…"></textarea>
+          </div>
+
+          <label class="field-label" for="rules-dir-input">Rules 目录</label>
+          <div class="path-row">
+            <input id="rules-dir-input" type="text" readonly placeholder="点击右侧按钮选择目录（留空则用 .agent/rules）" />
+            <button id="btn-pick-rules-dir" type="button" class="secondary-btn">选择…</button>
+            <button id="btn-clear-rules-dir" type="button" class="secondary-btn subtle-btn" title="置空">清除</button>
+          </div>
+
+          <label class="field-label" for="skills-dir-input">Skills 目录</label>
+          <div class="path-row">
+            <input id="skills-dir-input" type="text" readonly placeholder="点击右侧按钮选择目录（留空则用 .agent/skills）" />
+            <button id="btn-pick-skills-dir" type="button" class="secondary-btn">选择…</button>
+            <button id="btn-clear-skills-dir" type="button" class="secondary-btn subtle-btn" title="置空">清除</button>
+          </div>
+
+          <label class="field-label" for="memory-dir-input">Memory 目录</label>
+          <div class="path-row">
+            <input id="memory-dir-input" type="text" readonly placeholder="点击右侧按钮选择目录（留空则用 .agent/memory）" />
+            <button id="btn-pick-memory-dir" type="button" class="secondary-btn">选择…</button>
+            <button id="btn-clear-memory-dir" type="button" class="secondary-btn subtle-btn" title="置空">清除</button>
+          </div>
+
+          <p id="drawer-save-status" class="drawer-save-status" aria-live="polite"></p>
+          <button id="btn-save-agent" type="button" class="primary-btn">保存 Agent 配置</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="setup-modal" class="modal-backdrop">
+      <div class="modal-box setup-box">
+        <h2>欢迎使用 Cursor Agent π</h2>
+        <p class="setup-desc">
+          首次使用请填写 Cursor API Key，可在
+          <a href="https://cursor.com/dashboard/integrations" target="_blank" rel="noopener">Cursor 控制台</a>
+          获取。密钥仅保存在本机。
+        </p>
+        <label class="field-label" for="setup-api-key">API Key</label>
+        <input id="setup-api-key" type="password" placeholder="cursor_..." autocomplete="off" />
+        <label class="field-label" for="setup-cwd">默认工作目录</label>
+        <div class="path-row">
+          <input id="setup-cwd" type="text" readonly placeholder="点击右侧按钮选择目录" />
+          <button id="btn-pick-setup-cwd" type="button" class="secondary-btn">选择…</button>
+          <button id="btn-clear-setup-cwd" type="button" class="secondary-btn subtle-btn" title="置空">清除</button>
+        </div>
+        <label class="field-label" for="setup-model">默认模型</label>
+        <input id="setup-model" type="text" value="composer-2.5" />
+        <p id="setup-error" class="setup-error"></p>
+        <button id="btn-setup-save" class="setup-primary">保存并开始</button>
+      </div>
+    </div>
+
+    <div id="system-settings-modal" class="modal-backdrop">
+      <div class="modal-box system-settings-box">
+        <button id="system-settings-close" class="modal-close" type="button">×</button>
+        <h2>系统设置</h2>
+
+        <label class="field-label" for="system-font-size">界面字体大小</label>
+        <select id="system-font-size" class="settings-select">
+          <option value="small">小</option>
+          <option value="medium" selected>标准</option>
+          <option value="large">大</option>
+          <option value="xlarge">特大</option>
+        </select>
+
+        <hr class="settings-divider" />
+
+        <p class="settings-section-title">账户与默认</p>
+        <p class="setup-desc">修改 API Key 时填写新密钥；留空则保持不变。</p>
+        <label class="field-label" for="system-api-key">API Key</label>
+        <input id="system-api-key" type="password" placeholder="留空则不修改" autocomplete="off" />
+
+        <label class="field-label" for="system-default-cwd">默认工作目录</label>
+        <div class="path-row">
+          <input id="system-default-cwd" type="text" readonly placeholder="点击右侧按钮选择目录" />
+          <button id="btn-pick-system-cwd" type="button" class="secondary-btn">选择…</button>
+          <button id="btn-clear-system-cwd" type="button" class="secondary-btn subtle-btn" title="置空">清除</button>
+        </div>
+
+        <label class="field-label" for="system-default-model">默认模型</label>
+        <input id="system-default-model" type="text" />
+
+        <p id="system-settings-error" class="setup-error"></p>
+        <button id="btn-system-settings-save" type="button" class="setup-primary">保存</button>
+      </div>
+    </div>
+
+    <div id="model-modal" class="modal-backdrop">
+      <div class="modal-box">
+        <button id="model-modal-close" class="modal-close">×</button>
+        <h2>选择模型</h2>
+        <div id="model-list"></div>
+      </div>
+    </div>
+
+    <div id="link-viewer" class="link-viewer hidden" aria-hidden="true">
+      <div class="link-viewer-toolbar">
+        <button id="link-viewer-back" type="button" class="secondary-btn">← 返回对话</button>
+        <span id="link-viewer-title" class="link-viewer-title"></span>
+        <button id="link-viewer-external" type="button" class="secondary-btn" title="在浏览器中打开">↗</button>
+      </div>
+      <iframe id="link-viewer-frame" class="link-viewer-frame" title="链接预览" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-downloads"></iframe>
+    </div>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+
+    <script src="/static/agent-fsm.js"></script>
+    <script src="/static/composer.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
