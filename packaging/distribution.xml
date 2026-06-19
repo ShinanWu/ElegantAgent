@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
-    <title>Cursor Agent π</title>
+    <title>尤雅</title>
     <organization>com.cursor.agent.pi</organization>
     <domains enable_localSystem="true"/>
     <options customize="never" require-scripts="false" rootVolumeOnly="true"/>

@@ -194,6 +194,16 @@ const AgentFSM = (() => {
         clearStream(agent);
         break;
 
+      case "reset":
+        applyMeta(agent, payload);
+        agent.messages = [];
+        agent.messageCount = 0;
+        agent.phase = Phase.IDLE;
+        clearStream(agent);
+        result.messagesChanged = true;
+        result.streamChanged = true;
+        break;
+
       case "snapshot": {
         const incoming = payload.messages || [];
         const local = agent.messages;

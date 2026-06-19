@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$ROOT/dist"
-APP_NAME="Cursor Agent π.app"
+APP_NAME="尤雅.app"
 PKG_ID="com.cursor.agent.pi"
 PKG_VERSION="1.0.1"
 COMPONENT_PKG="$DIST/CursorAgentPi-component.pkg"

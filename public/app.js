@@ -207,7 +207,6 @@ function handleMessage(msg) {
         });
         if (isActive(msg.agent.id)) {
           state.activeAgent = { ...msg.agent, messages: fx.agent.messages };
-          $("header-agent-name").textContent = msg.agent.name || "Agent";
           $("model-name").textContent = msg.agent.model;
           populateAgentDrawer(msg.agent);
         }
@@ -234,6 +233,32 @@ function handleMessage(msg) {
       renderDiscussions();
       refreshAllDiscussionHighlights();
       updateChrome();
+      break;
+
+    case "agent_reset":
+      {
+        AgentFSM.dispatch(msg.agent.id, "reset", msg.agent);
+        const idx = state.agents.findIndex((a) => a.id === msg.agent.id);
+        if (idx >= 0) {
+          state.agents[idx] = { ...state.agents[idx], ...msg.agent, running: false };
+        }
+        if (isActive(msg.agent.id)) {
+          closeAgentDrawer();
+          state.activeAgent = { ...msg.agent, messages: [] };
+          state.discussions = [];
+          state.expandedDiscussionId = null;
+          state.maximizedDiscussionId = null;
+          $("model-name").textContent = msg.agent.model;
+          renderMessages([], { scroll: "bottom" });
+          clearComposer();
+          renderDiscussions();
+          refreshAllDiscussionHighlights();
+          updateChrome();
+          requestAnimationFrame(() => mainComposer?.focus());
+          showToast("Agent 已重置");
+        }
+        renderAgents();
+      }
       break;
 
     case "agent_files":
@@ -332,6 +357,20 @@ function handleMessage(msg) {
           renderDiscussions();
         }
       }
+      break;
+
+    case "discussion_deleted":
+      removeDiscussionHighlight(msg.discussionId);
+      delete state.discussionRuntimes[msg.discussionId];
+      state.discussions = state.discussions.filter((d) => d.id !== msg.discussionId);
+      if (state.expandedDiscussionId === msg.discussionId) {
+        state.expandedDiscussionId = null;
+      }
+      if (state.maximizedDiscussionId === msg.discussionId) {
+        state.maximizedDiscussionId = null;
+      }
+      renderDiscussions();
+      refreshAllDiscussionHighlights();
       break;
 
     case "error":
@@ -441,7 +480,6 @@ function paintActiveConversation(agentId) {
   const machine = AgentFSM.ensure(agentId);
   const summary = state.agents.find((a) => a.id === agentId) || state.activeAgent || {};
   state.activeAgent = { ...summary, ...machine.meta, id: agentId, messages: machine.messages };
-  $("header-agent-name").textContent = machine.meta.name || summary.name || "Agent";
   $("model-name").textContent = machine.meta.model || summary.model || state.defaultModel;
   renderMessages(machine.messages, { scroll: "restore" });
   if (machine.phase === AgentFSM.Phase.RUNNING) renderAgentRunUI(agentId);
@@ -464,7 +502,6 @@ function loadConversation(agent) {
   }
   if (!isActive(agent.id)) return;
   state.activeAgent = { ...agent, messages: fx.agent.messages };
-  $("header-agent-name").textContent = agent.name || "Agent";
   $("model-name").textContent = agent.model || state.defaultModel;
   populateAgentDrawer(agent);
   if (fx.messagesChanged) {
@@ -590,6 +627,23 @@ function renderAgents() {
 function deleteAgent(id, name) {
   if (!confirm(`确定删除 Agent「${name}」？主对话与讨论将一并删除。`)) return;
   send({ type: "delete_agent", agentId: id });
+}
+
+function resetAgent(id, name) {
+  if (
+    !confirm(
+      `确定重置 Agent「${name}」？\n\n将清空主对话、所有讨论，并删除 .agent/uploads 与 .agent/outputs 中的产物。Soul、Rules 等配置不会删除。`
+    )
+  ) {
+    return;
+  }
+  closeAgentDrawer();
+  send({ type: "reset_agent", agentId: id });
+}
+
+function deleteDiscussion(discussionId) {
+  if (!confirm("确定删除此讨论？")) return;
+  send({ type: "delete_discussion", discussionId });
 }
 
 function renderMessages(messages, { scroll = "restore" } = {}) {
@@ -1465,6 +1519,7 @@ function bindContextMenu() {
     });
     el.addEventListener("mouseup", (e) => {
       if (e.button !== 0) return;
+      if (e.target.closest("#context-menu")) return;
       window.setTimeout(() => maybeShowSelectionContextMenu(), 0);
     });
   }
@@ -1489,8 +1544,10 @@ function bindContextMenu() {
     if (!btn || btn.disabled) return;
     const action = btn.dataset.action;
     hideContextMenu();
+    state.suppressSelectionContextMenuUntil = Date.now() + 500;
     if (action === "copy") {
       const ok = await copyCurrentSelection();
+      window.getSelection()?.removeAllRanges();
       if (!ok) showToast("无法复制选中内容", "error");
     } else if (action === "paste") {
       await pasteClipboardToComposer();
@@ -1751,8 +1808,19 @@ function buildDiscussionPanelHeader(d, drt) {
     toggleDiscussionMaximize(d.id);
   };
 
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "discussion-panel-delete icon-btn";
+  deleteBtn.title = "删除讨论";
+  deleteBtn.textContent = "×";
+  deleteBtn.onclick = (e) => {
+    e.stopPropagation();
+    deleteDiscussion(d.id);
+  };
+
   actions.appendChild(locateBtn);
   actions.appendChild(maxBtn);
+  actions.appendChild(deleteBtn);
   header.appendChild(titleBtn);
   header.appendChild(actions);
   return header;
@@ -2284,6 +2352,11 @@ function bindUi() {
     if (e.target === $("agent-drawer")) closeAgentDrawer();
   });
   $("btn-save-agent").onclick = saveAgentConfig;
+  $("btn-reset-agent").onclick = () => {
+    if (!state.activeAgentId) return;
+    const agent = state.agents.find((a) => a.id === state.activeAgentId);
+    resetAgent(state.activeAgentId, agent?.name || "Agent");
+  };
   bindPickFolderButton("btn-pick-cwd", "agent-cwd-input");
   bindClearPathButton("btn-clear-cwd", "agent-cwd-input");
   bindPickFolderButton("btn-pick-rules-dir", "rules-dir-input");

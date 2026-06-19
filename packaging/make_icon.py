@@ -1,116 +1,117 @@
 #!/usr/bin/env python3
-"""生成 macOS 原生风格的 AppIcon.icns（简洁渐变 + π 符号）。"""
+"""从 AppIconSource.png 生成 macOS AppIcon.icns、顶栏 logo 与各尺寸 PNG。"""
 
 from __future__ import annotations
 
-import math
 import shutil
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent
+PUBLIC = PROJECT_ROOT / "public"
+SOURCE = ROOT / "AppIconSource.png"
 OUT = ROOT / "AppIcon.icns"
 ICONSET = ROOT / "AppIcon.iconset"
 CANVAS = 1024
-
-# 与应用 UI 一致的深蓝配色
-BG_TOP = (36, 59, 107)       # #243b6b
-BG_BOTTOM = (18, 24, 41)     # #121829
-ACCENT = (110, 168, 219)     # #6ea8db
-GLYPH = (235, 242, 255)
-
-
-def _lerp(a: int, b: int, t: float) -> int:
-    return int(a + (b - a) * t)
+BG = (255, 255, 255)
+TRIM_THRESHOLD = 248
+TRIM_PAD_RATIO = 0.015
+CANVAS_PADDING_RATIO = 0.035
+HEADER_LOGO_SIZES = (56, 112)  # 顶栏 28px CSS，@1x / @2x
 
 
-def _render_master(size: int = CANVAS):
-    from PIL import Image, ImageDraw, ImageFont
+def _trim_content(img):
+    from PIL import Image
 
-    img = Image.new("RGB", (size, size))
-    px = img.load()
-    for y in range(size):
-        t = y / max(size - 1, 1)
-        row = (
-            _lerp(BG_TOP[0], BG_BOTTOM[0], t),
-            _lerp(BG_TOP[1], BG_BOTTOM[1], t),
-            _lerp(BG_TOP[2], BG_BOTTOM[2], t),
+    rgba = img.convert("RGBA")
+    w, h = rgba.size
+    px = rgba.load()
+    min_x, min_y, max_x, max_y = w, h, 0, 0
+    found = False
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if a < 16:
+                continue
+            if r >= TRIM_THRESHOLD and g >= TRIM_THRESHOLD and b >= TRIM_THRESHOLD:
+                continue
+            found = True
+            min_x = min(min_x, x)
+            min_y = min(min_y, y)
+            max_x = max(max_x, x)
+            max_y = max(max_y, y)
+    if not found:
+        return rgba
+
+    cw = max_x - min_x + 1
+    ch = max_y - min_y + 1
+    pad = max(6, int(max(cw, ch) * TRIM_PAD_RATIO))
+    return rgba.crop(
+        (
+            max(0, min_x - pad),
+            max(0, min_y - pad),
+            min(w, max_x + pad + 1),
+            min(h, max_y + pad + 1),
         )
-        for x in range(size):
-            px[x, y] = row
-
-    draw = ImageDraw.Draw(img)
-
-    # 顶部柔和高光（类似系统图标质感）
-    highlight = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    hdraw = ImageDraw.Draw(highlight)
-    cx, cy = size // 2, int(size * 0.28)
-    r = int(size * 0.55)
-    for i in range(r, 0, -1):
-        alpha = int(28 * (1 - i / r) ** 1.6)
-        hdraw.ellipse((cx - i, cy - i, cx + i, cy + i), fill=(255, 255, 255, alpha))
-    img = Image.alpha_composite(img.convert("RGBA"), highlight).convert("RGB")
-    draw = ImageDraw.Draw(img)
-
-    # 中心 π
-    font = None
-    for path, sz in (
-        ("/System/Library/Fonts/SFNS.ttf", int(size * 0.46)),
-        ("/System/Library/Fonts/SFNSRounded.ttf", int(size * 0.46)),
-        ("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", int(size * 0.50)),
-        ("/Library/Fonts/Arial Unicode.ttf", int(size * 0.50)),
-    ):
-        try:
-            font = ImageFont.truetype(path, sz)
-            break
-        except OSError:
-            continue
-    if font is None:
-        font = ImageFont.load_default()
-
-    glyph = "π"
-    bbox = draw.textbbox((0, 0), glyph, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    tx = (size - tw) // 2 - bbox[0]
-    ty = (size - th) // 2 - bbox[1] - int(size * 0.02)
-    draw.text((tx, ty), glyph, fill=GLYPH, font=font)
-
-    # 底部 accent 弧线（极简装饰）
-    arc_y = int(size * 0.78)
-    arc_w = int(size * 0.36)
-    draw.arc(
-        (size // 2 - arc_w, arc_y - arc_w // 3, size // 2 + arc_w, arc_y + arc_w // 2),
-        start=200,
-        end=340,
-        fill=ACCENT,
-        width=max(2, size // 128),
     )
 
-    return img
+
+def _fit_on_square(img, size: int, padding_ratio: float = CANVAS_PADDING_RATIO):
+    from PIL import Image
+
+    canvas = Image.new("RGBA", (size, size), (*BG, 255))
+    padding = max(4, int(size * padding_ratio))
+    max_w = size - padding * 2
+    max_h = size - padding * 2
+    sw, sh = img.size
+    scale = min(max_w / sw, max_h / sh)
+    nw = max(1, int(sw * scale))
+    nh = max(1, int(sh * scale))
+    resized = img.resize((nw, nh), Image.Resampling.LANCZOS)
+    x = (size - nw) // 2
+    y = (size - nh) // 2
+    canvas.paste(resized, (x, y), resized)
+    return canvas
+
+
+def _compose_master(trimmed, size: int = CANVAS):
+    return _fit_on_square(trimmed, size).convert("RGB")
 
 
 def _save_png(img, path: Path) -> None:
     img.save(path, format="PNG", compress_level=1, optimize=False)
 
 
-def _resize_sharp(master, size: int):
-    from PIL import Image, ImageFilter
+def _resize_icon(master, size: int):
+    from PIL import Image
 
-    out = master.resize((size, size), Image.Resampling.LANCZOS)
-    if size <= 128:
-        out = out.filter(ImageFilter.UnsharpMask(radius=0.4, percent=120, threshold=2))
-    return out
+    return master.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def _export_header_logos(trimmed) -> None:
+    PUBLIC.mkdir(parents=True, exist_ok=True)
+    one_x, two_x = HEADER_LOGO_SIZES
+    _save_png(_fit_on_square(trimmed, one_x), PUBLIC / "app-logo.png")
+    _save_png(_fit_on_square(trimmed, two_x), PUBLIC / "app-logo@2x.png")
 
 
 def main() -> None:
     try:
-        from PIL import Image  # noqa: F401
+        from PIL import Image
     except ImportError:
         print("Pillow 未安装，跳过图标生成")
         return
 
-    master = _render_master(CANVAS)
+    if not SOURCE.is_file():
+        raise FileNotFoundError(f"缺少图标源文件: {SOURCE}")
+
+    trimmed = _trim_content(Image.open(SOURCE))
+    print(f"源图 {Image.open(SOURCE).size} → 裁切后 {trimmed.size}")
+
+    master = _compose_master(trimmed, CANVAS)
     _save_png(master, ROOT / "AppIcon.png")
+    _export_header_logos(trimmed)
 
     if ICONSET.exists():
         shutil.rmtree(ICONSET)
@@ -129,13 +130,14 @@ def main() -> None:
         (1024, "icon_512x512@2x.png"),
     ]
     for size, name in mapping:
-        _save_png(_resize_sharp(master, size), ICONSET / name)
+        _save_png(_resize_icon(master, size), ICONSET / name)
 
     subprocess.run(
         ["iconutil", "-c", "icns", str(ICONSET), "-o", str(OUT)],
         check=True,
     )
     print(f"已生成 {OUT}")
+    print(f"已生成顶栏 logo: {PUBLIC / 'app-logo.png'} ({HEADER_LOGO_SIZES[0]}px)")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
@@ -252,3 +253,20 @@ def save_upload(
         "path": str(dest),
         "relative": f".agent/uploads/{dest.name}",
     }
+
+
+def clear_artifacts(cwd: str | Path) -> None:
+    """清空 Agent 工作区内的上传与产物目录（保留 rules/skills/memory/soul）。"""
+    root = agent_dir(cwd)
+    for sub in ("uploads", "outputs"):
+        folder = root / sub
+        if not folder.is_dir():
+            continue
+        for child in list(folder.iterdir()):
+            try:
+                if child.is_file() or child.is_symlink():
+                    child.unlink()
+                elif child.is_dir():
+                    shutil.rmtree(child)
+            except OSError:
+                pass

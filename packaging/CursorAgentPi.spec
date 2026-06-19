@@ -100,14 +100,14 @@ coll = COLLECT(
 
 app = BUNDLE(
     coll,
-    name="Cursor Agent π.app",
+    name="尤雅.app",
     icon=str(project_root / "packaging" / "AppIcon.icns")
     if (project_root / "packaging" / "AppIcon.icns").exists()
     else None,
     bundle_identifier="com.cursor.agent.pi",
     info_plist={
-        "CFBundleName": "Cursor Agent π",
-        "CFBundleDisplayName": "Cursor Agent π",
+        "CFBundleName": "尤雅",
+        "CFBundleDisplayName": "尤雅",
         "CFBundleVersion": "1.0.0",
         "CFBundleShortVersionString": "1.0.0",
         # PyInstaller 默认会写成 "AppIcon.icns"（带扩展名），导致系统找不到图标

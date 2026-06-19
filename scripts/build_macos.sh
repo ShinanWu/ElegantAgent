@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENDOR="$ROOT/public/vendor"
 MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
 DIST="$ROOT/dist"
-APP_NAME="Cursor Agent π.app"
+APP_NAME="尤雅.app"
 
 cd "$ROOT"
 

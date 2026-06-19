@@ -67,7 +67,7 @@ async def lifespan(_: FastAPI):
     async with manager_lifespan(APP_CONFIG):
         set_event_loop(asyncio.get_running_loop())
         url = f"http://{HOST}:{PORT}"
-        logger.info("Cursor Agent π 运行于 %s", url)
+        logger.info("尤雅 运行于 %s", url)
         if os.environ.get("OPEN_BROWSER", "1") == "1" and not os.environ.get(
             "CURSOR_AGENT_NO_BROWSER"
         ):
@@ -75,7 +75,7 @@ async def lifespan(_: FastAPI):
         yield
 
 
-app = FastAPI(title="Cursor Agent π", lifespan=lifespan)
+app = FastAPI(title="尤雅", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=PUBLIC), name="static")
 
 
@@ -302,6 +302,37 @@ async def websocket_endpoint(ws: WebSocket):
                     manager.delete_agent(data["agentId"])
                 await emit({"type": "agent_deleted", "agentId": data["agentId"]})
 
+            elif msg_type == "reset_agent":
+                manager = await ensure_manager()
+                if manager is None:
+                    await emit({"type": "error", "message": "请先完成设置"})
+                    continue
+                try:
+                    record = await manager.reset_agent(data["agentId"])
+                    await emit(
+                        {
+                            "type": "agent_reset",
+                            "agent": record.to_detail(running=False),
+                        }
+                    )
+                except ValueError as err:
+                    await emit(
+                        {
+                            "type": "error",
+                            "agentId": data.get("agentId"),
+                            "message": str(err),
+                        }
+                    )
+                except Exception as err:
+                    logger.exception("reset_agent failed")
+                    await emit(
+                        {
+                            "type": "error",
+                            "agentId": data.get("agentId"),
+                            "message": f"重置失败: {err}",
+                        }
+                    )
+
             elif msg_type == "read_agent_files":
                 manager = await ensure_manager()
                 if manager is None:
@@ -416,6 +447,29 @@ async def websocket_endpoint(ws: WebSocket):
                 asyncio.create_task(
                     run_discussion_send(data["discussionId"], data.get("message", ""))
                 )
+
+            elif msg_type == "delete_discussion":
+                manager = await ensure_manager()
+                if manager is None:
+                    await emit({"type": "error", "message": "请先完成设置"})
+                    continue
+                deleted = manager.discussions.delete(data["discussionId"])
+                if deleted is None:
+                    await emit(
+                        {
+                            "type": "error",
+                            "discussionId": data.get("discussionId"),
+                            "message": "讨论不存在",
+                        }
+                    )
+                else:
+                    await emit(
+                        {
+                            "type": "discussion_deleted",
+                            "discussionId": deleted.id,
+                            "agentId": deleted.agent_id,
+                        }
+                    )
 
             else:
                 await emit({"type": "error", "message": f"未知消息类型: {msg_type}"})

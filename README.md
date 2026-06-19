@@ -1,4 +1,4 @@
-# Cursor Agent π
+# 尤雅
 
 仿 [Pi Coding Agent](https://github.com/badlogic/pi-mono) 风格的 Cursor Agent 桌面应用，基于 [Cursor Python SDK](https://cursor.com/docs/sdk/python)。
 
@@ -6,7 +6,7 @@
 
 1. 双击 `dist/CursorAgentPi.pkg`
 2. 在安装向导中点击「继续」完成安装
-3. 在「应用程序」中打开 **Cursor Agent π**，按引导填写 API Key 即可使用
+3. 在「应用程序」中打开 **尤雅**，按引导填写 API Key 即可使用
 
 配置与聊天记录保存在：
 

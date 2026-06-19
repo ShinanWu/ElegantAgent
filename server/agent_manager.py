@@ -15,9 +15,10 @@ from cursor_sdk import (
     SendOptions,
     UserMessage,
 )
-from cursor_sdk.types import SDKImage
+from cursor_sdk.types import SDKImage, SandboxOptions
 
 from .agent_workspace import (
+    clear_artifacts,
     list_agent_config,
     read_config_file,
     scaffold_agent_dir,
@@ -262,6 +263,29 @@ class AgentManager:
             asyncio.create_task(sdk_agent.close())
         self.discussions.delete_for_agent(agent_id)
 
+    async def reset_agent(self, agent_id: str) -> AgentRecord:
+        record = self.agents.get(agent_id)
+        if record is None:
+            raise ValueError("Agent 不存在")
+
+        self._cancel_requested[agent_id] = True
+        run = self._runs.get(agent_id)
+        if run is not None:
+            try:
+                await self._abort_run(agent_id, run)
+            except Exception:
+                logger.exception("重置 Agent %s 时取消运行失败", agent_id)
+        self._cancel_requested.pop(agent_id, None)
+
+        self._reset_sdk_binding(record)
+        record.messages.clear()
+        clear_artifacts(record.cwd)
+        self.discussions.delete_for_agent(agent_id)
+        record.touch()
+        save_agents(self.agents)
+        logger.info("已重置 Agent %s", agent_id)
+        return record
+
     def read_agent_files(self, agent_id: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         record = self.agents[agent_id]
         return list_agent_config(record, overrides)
@@ -337,7 +361,10 @@ class AgentManager:
         options = AgentOptions(
             api_key=self.api_key,
             model=record.model,
-            local=LocalAgentOptions(cwd=workspace_path(record.cwd)),
+            local=LocalAgentOptions(
+                cwd=workspace_path(record.cwd),
+                sandbox_options=SandboxOptions(enabled=False),
+            ),
         )
 
         agent = None

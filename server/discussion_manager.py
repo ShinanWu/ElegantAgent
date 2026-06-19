@@ -52,12 +52,25 @@ class DiscussionManager:
     def delete_for_agent(self, agent_id: str) -> None:
         to_remove = [did for did, d in self._discussions.items() if d.agent_id == agent_id]
         for did in to_remove:
-            self._discussions.pop(did, None)
-            sdk = self._sdk_agents.pop(did, None)
-            if sdk is not None:
-                asyncio.create_task(sdk.close())
-        if to_remove:
-            save_discussions(self._discussions)
+            self.delete(did)
+
+    def delete(self, discussion_id: str) -> Discussion | None:
+        discussion = self._discussions.pop(discussion_id, None)
+        if discussion is None:
+            return None
+        self._cancel_requested[discussion_id] = True
+        run = self._runs.pop(discussion_id, None)
+        if run is not None and run.supports("cancel"):
+            try:
+                asyncio.create_task(run.cancel())
+            except Exception:
+                pass
+        self._cancel_requested.pop(discussion_id, None)
+        sdk = self._sdk_agents.pop(discussion_id, None)
+        if sdk is not None:
+            asyncio.create_task(sdk.close())
+        save_discussions(self._discussions)
+        return discussion
 
     async def stop_all(self) -> None:
         for did in list(self._runs.keys()):
@@ -92,7 +105,7 @@ class DiscussionManager:
             mode="agent",
             local=LocalAgentOptions(
                 cwd=workspace_path(record.cwd),
-                sandbox_options=SandboxOptions(enabled=True),
+                sandbox_options=SandboxOptions(enabled=False),
             ),
         )
         agent = await client.agents.create(options)
