@@ -90,3 +90,7 @@ python packaging/make_icon.py
 - Python · FastAPI · WebSocket · pywebview
 - 原生 Cursor SDK（local agent + bridge）
 - 无框架前端（Vanilla JS + contenteditable composer）
+
+## License
+
+[MIT](LICENSE)
