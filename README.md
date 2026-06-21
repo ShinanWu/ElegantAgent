@@ -38,7 +38,7 @@
 
 1. 在 [Releases](https://github.com/ShinanWu/ElegantAgent/releases/latest) 下载 `CursorAgentPi.pkg`
 2. 双击安装包，按向导完成安装
-3. 在「应用程序」中打开 **尤雅**，填写 [Cursor API Key](https://cursor.com/dashboard/integrations) 即可开始
+3. 在「应用程序」中打开 **尤雅**，填写 [Cursor API Key](https://cursor.com/dashboard/api?section=user-keys#user-api-keys) 即可开始
 
 配置与数据目录：
 
