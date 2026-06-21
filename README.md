@@ -66,14 +66,6 @@ python run.py
 
 打包脚本使用清华 PyPI 镜像，并内置前端静态资源，安装后可离线使用界面。
 
-### 重新生成图标
-
-将高清 logo 置于 `packaging/AppIconSource.png`，然后：
-
-```bash
-python packaging/make_icon.py
-```
-
 ## 配置项
 
 | 字段 | 说明 |
