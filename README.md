@@ -37,8 +37,9 @@
 ## 用户安装（macOS）
 
 1. 在 [Releases](https://github.com/ShinanWu/ElegantAgent/releases/latest) 下载 `CursorAgentPi.pkg`
-2. 双击安装包，按向导完成安装
-3. 在「应用程序」中打开 **尤雅**，填写 [Cursor API Key](https://cursor.com/dashboard/api?section=user-keys#user-api-keys) 即可开始
+2. 双击安装包。若提示 **「Apple 无法验证 CursorAgentPi.pkg」**（未公证的独立软件常见提示，并非恶意软件），请打开 **系统设置 → 隐私与安全性**，在页面底部找到被拦截的安装包，点 **仍要打开**，再重新双击安装
+3. 在「应用程序」中打开 **尤雅**；若首次启动仍有相同提示，同样在 **隐私与安全性** 中点 **仍要打开**
+4. 填写 [Cursor API Key](https://cursor.com/dashboard/api?section=user-keys#user-api-keys) 即可开始
 
 配置与数据目录：
 
