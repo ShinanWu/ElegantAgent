@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="public/app-logo@2x.png" alt="尤雅" width="96" />
+  <img src="public/app-logo-hero.png" alt="尤雅" width="192" />
 </p>
 
 <h1 align="center">尤雅 · ElegantAgent</h1>

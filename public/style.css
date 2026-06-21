@@ -60,9 +60,9 @@ body {
 }
 
 .app-logo {
-  width: 28px;
-  height: 28px;
-  border-radius: 7px;
+  width: 40px;
+  height: 40px;
+  border-radius: 9px;
   object-fit: cover;
   flex-shrink: 0;
   display: block;

@@ -18,7 +18,8 @@ BG = (255, 255, 255)
 TRIM_THRESHOLD = 248
 TRIM_PAD_RATIO = 0.015
 CANVAS_PADDING_RATIO = 0.035
-HEADER_LOGO_SIZES = (56, 112)  # 顶栏 28px CSS，@1x / @2x
+HEADER_LOGO_SIZES = (80, 160)  # 顶栏 40px CSS，@1x / @2x
+HERO_LOGO_SIZE = 384  # README 展示用高清图
 
 
 def _trim_content(img):
@@ -94,6 +95,7 @@ def _export_header_logos(trimmed) -> None:
     one_x, two_x = HEADER_LOGO_SIZES
     _save_png(_fit_on_square(trimmed, one_x), PUBLIC / "app-logo.png")
     _save_png(_fit_on_square(trimmed, two_x), PUBLIC / "app-logo@2x.png")
+    _save_png(_fit_on_square(trimmed, HERO_LOGO_SIZE), PUBLIC / "app-logo-hero.png")
 
 
 def main() -> None:
