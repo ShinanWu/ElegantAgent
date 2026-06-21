@@ -36,15 +36,7 @@
 
 ## 用户安装（macOS）
 
-1. 在 [Releases](https://github.com/ShinanWu/ElegantAgent/releases) 下载 `CursorAgentPi.pkg`（或本地构建产物）
-2. 双击安装包，按向导完成安装
-3. 在「应用程序」中打开 **尤雅**，填写 [Cursor API Key](https://cursor.com/dashboard/integrations) 即可开始
-
-配置与数据目录：
-
-`~/Library/Application Support/CursorAgentPi/`
-
-## 开发者
+### 方式一：开发模式运行（推荐）
 
 ```bash
 git clone https://github.com/ShinanWu/ElegantAgent.git
@@ -54,7 +46,26 @@ source .venv/bin/activate
 python run.py
 ```
 
-复制 `.env.example` 为 `.env`，填入 `CURSOR_API_KEY` 与默认工作目录。
+按引导填写 [Cursor API Key](https://cursor.com/dashboard/integrations) 即可使用。
+
+### 方式二：安装包
+
+在 [Releases](https://github.com/ShinanWu/ElegantAgent/releases) 下载 `CursorAgentPi.pkg`（若已有发布版本），或自行打包：
+
+```bash
+./scripts/build_macos.sh
+open dist/CursorAgentPi.pkg
+```
+
+双击安装后，在「应用程序」中打开 **尤雅**。
+
+配置与数据目录：
+
+`~/Library/Application Support/CursorAgentPi/`
+
+## 开发者
+
+开发者模式与上方「方式一」相同。复制 `.env.example` 为 `.env`，可预先填入 `CURSOR_API_KEY` 与默认工作目录。
 
 ### 打包发布
 
