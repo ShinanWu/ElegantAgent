@@ -74,6 +74,8 @@
       this._rendering = false;
       this._composing = false;
       this._lastCompositionData = "";
+      this._compositionRange = null;
+      this._compositionCaret = null;
 
       if (!this.root) return;
 
@@ -88,7 +90,14 @@
       this.root.addEventListener("click", () => this._syncCaretFromSelection());
       this.root.addEventListener("mouseup", () => this._syncCaretFromSelection());
       this.root.addEventListener("compositionstart", () => {
-        this._syncCaretFromSelection();
+        const range = this._getSelectionCaretRange();
+        this._compositionRange = range && range.end > range.start ? range : null;
+        if (this._compositionRange) {
+          this.caret = this._compositionRange.start;
+        } else {
+          this._syncCaretFromSelection();
+        }
+        this._compositionCaret = this.caret;
         this._composing = true;
         this._lastCompositionData = "";
         this._prepareCompositionDom();
@@ -104,8 +113,16 @@
         this._lastCompositionData = data;
         this._composing = false;
         this.root.classList.remove("is-composing");
-        this._syncCaretFromSelection();
+        const range = this._compositionRange;
+        this._compositionRange = null;
+        const startCaret = this._compositionCaret;
+        this._compositionCaret = null;
         if (data) {
+          if (range) {
+            this._deleteRange(range.start, range.end);
+          } else if (startCaret != null) {
+            this.caret = Math.min(startCaret, this._maxCaret());
+          }
           this._insertText(data);
         } else {
           this._render();
