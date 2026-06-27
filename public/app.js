@@ -1114,7 +1114,7 @@ function renderInlineBody(container, content, attachments) {
     while ((m = re.exec(content)) !== null) {
       if (m.index > last) appendInlineText(container, content.slice(last, m.index));
       container.appendChild(createInlineAttachmentChip(resolveAttachmentItem(attachMap, m[1])));
-      last = re.end;
+      last = re.lastIndex;
     }
     if (last < content.length) appendInlineText(container, content.slice(last));
     return;
