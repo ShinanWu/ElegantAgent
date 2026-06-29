@@ -8,6 +8,14 @@ function encodeAttachmentMarker(path) {
   return `[[πattach:${path}]]`;
 }
 
+const NO_INSTRUCTION_TEXT = "（未识别到意图）";
+const NO_INSTRUCTION_LEGACY = new Set([
+  "（无指令意图）",
+  "无指令意图",
+  "（无意图）",
+  "（未识别到意图）",
+]);
+
 const state = {
   ws: null,
   connected: false,
@@ -26,6 +34,11 @@ const state = {
   discussRailOpen: false,
   expandedDiscussionId: null,
   maximizedDiscussionId: null,
+  selectedDiscussionIds: new Set(),
+  combinedSummaries: [],
+  summaryRuntimes: {},
+  combinedSummaryRuntimes: {},
+  summarySectionOpen: new Set(),
   savingAgent: false,
   openDrawerAfterSelect: false,
   linkViewerUrl: "",
@@ -100,6 +113,7 @@ function resyncActiveAgent() {
   send({ type: "list_agents" });
   fetchConversation(state.activeAgentId);
   send({ type: "list_discussions", agentId: state.activeAgentId });
+  send({ type: "list_combined_summaries", agentId: state.activeAgentId });
 }
 
 function connect() {
@@ -223,6 +237,9 @@ function handleMessage(msg) {
       AgentFSM.remove(msg.agentId);
       state.agents = state.agents.filter((a) => a.id !== msg.agentId);
       state.discussions = state.discussions.filter((d) => d.agentId !== msg.agentId);
+      state.combinedSummaries = state.combinedSummaries.filter((c) => c.agentId !== msg.agentId);
+      state.selectedDiscussionIds = new Set();
+      state.summarySectionOpen = new Set();
       if (state.activeAgentId === msg.agentId) {
         state.activeAgentId = null;
         state.activeAgent = null;
@@ -246,12 +263,18 @@ function handleMessage(msg) {
           closeAgentDrawer();
           state.activeAgent = { ...msg.agent, messages: [] };
           state.discussions = [];
+          state.combinedSummaries = [];
+          state.selectedDiscussionIds = new Set();
+          state.summaryRuntimes = {};
+          state.combinedSummaryRuntimes = {};
+          state.summarySectionOpen = new Set();
           state.expandedDiscussionId = null;
           state.maximizedDiscussionId = null;
           $("model-name").textContent = msg.agent.model;
           renderMessages([], { scroll: "bottom" });
           clearComposer();
           renderDiscussions();
+          renderCombinedSummaries();
           refreshAllDiscussionHighlights();
           updateChrome();
           requestAnimationFrame(() => mainComposer?.focus());
@@ -333,7 +356,7 @@ function handleMessage(msg) {
         if (!appendDiscussionUserMessageDom(msg.discussionId, msg.message)) {
           renderDiscussions();
         } else {
-          setExpandedDiscussion(msg.discussionId);
+          expandDiscussion(msg.discussionId);
           updateDiscussionTitleBusy(msg.discussionId, true);
           updateDiscussionStreaming(msg.discussionId, drt);
         }
@@ -359,10 +382,122 @@ function handleMessage(msg) {
       }
       break;
 
+    case "discussion_summary_started":
+      openSummarySection(msg.discussionId);
+      setSummaryRuntime(msg.discussionId, { busy: true, streamingText: "" });
+      updateDiscussionSummaryDom(msg.discussionId, { busy: true, text: "" });
+      break;
+
+    case "discussion_summary_stream":
+      {
+        const rt = getSummaryRuntime(msg.discussionId);
+        rt.streamingText = (rt.streamingText || "") + (msg.text || "");
+        updateDiscussionSummaryDom(msg.discussionId, {
+          busy: true,
+          text: rt.streamingText,
+        });
+      }
+      break;
+
+    case "discussion_summary_updated":
+      {
+        const idx = state.discussions.findIndex((d) => d.id === msg.discussion.id);
+        if (idx >= 0) state.discussions[idx] = msg.discussion;
+        setSummaryRuntime(msg.discussion.id, { busy: false, streamingText: "" });
+        updateDiscussionSummaryDom(msg.discussion.id, {
+          busy: false,
+          text: msg.discussion.summary || "",
+        });
+        updateDiscussionSummarizeBtn(msg.discussion.id);
+      }
+      break;
+
+    case "combined_summaries":
+      if (msg.agentId === state.activeAgentId) {
+        state.combinedSummaries = msg.combinedSummaries || [];
+        renderCombinedSummaries();
+      }
+      break;
+
+    case "combined_summary_started":
+      {
+        const existing = state.combinedSummaries.find((c) => c.id === msg.combinedSummary.id);
+        if (!existing) {
+          state.combinedSummaries.unshift(msg.combinedSummary);
+        }
+        setCombinedSummaryRuntime(msg.combinedSummary.id, {
+          busy: true,
+          streamingText: "",
+          phase: "individual",
+          current: 0,
+          total: msg.combinedSummary.discussionIds?.length || 0,
+        });
+        renderCombinedSummaries();
+      }
+      break;
+
+    case "combined_summary_progress":
+      {
+        const rt = getCombinedSummaryRuntime(msg.combinedSummaryId);
+        rt.phase = msg.phase;
+        rt.current = msg.current;
+        rt.total = msg.total;
+        rt.busy = true;
+        updateCombinedSummaryProgress(msg.combinedSummaryId, rt);
+      }
+      break;
+
+    case "combined_summary_stream":
+      {
+        const rt = getCombinedSummaryRuntime(msg.combinedSummaryId);
+        rt.streamingText = (rt.streamingText || "") + (msg.text || "");
+        updateCombinedSummaryDom(msg.combinedSummaryId, {
+          busy: true,
+          text: rt.streamingText,
+          phase: rt.phase,
+          current: rt.current,
+          total: rt.total,
+        });
+      }
+      break;
+
+    case "combined_summary_updated":
+      {
+        const idx = state.combinedSummaries.findIndex((c) => c.id === msg.combinedSummary.id);
+        if (idx >= 0) state.combinedSummaries[idx] = msg.combinedSummary;
+        else state.combinedSummaries.unshift(msg.combinedSummary);
+        setCombinedSummaryRuntime(msg.combinedSummary.id, {
+          busy: false,
+          streamingText: "",
+          phase: null,
+          current: 0,
+          total: 0,
+        });
+        updateCombinedSummaryDom(msg.combinedSummary.id, {
+          busy: false,
+          text: msg.combinedSummary.summary || "",
+        });
+      }
+      break;
+
+    case "combined_summary_deleted":
+      state.combinedSummaries = state.combinedSummaries.filter(
+        (c) => c.id !== msg.combinedSummaryId
+      );
+      delete state.combinedSummaryRuntimes[msg.combinedSummaryId];
+      renderCombinedSummaries();
+      break;
+
     case "discussion_deleted":
       removeDiscussionHighlight(msg.discussionId);
       delete state.discussionRuntimes[msg.discussionId];
+      delete state.summaryRuntimes[msg.discussionId];
       state.discussions = state.discussions.filter((d) => d.id !== msg.discussionId);
+      state.combinedSummaries = state.combinedSummaries.filter(
+        (c) => !(c.discussionIds || []).includes(msg.discussionId)
+      );
+      state.selectedDiscussionIds.delete(msg.discussionId);
+      state.summarySectionOpen.delete(msg.discussionId);
       if (state.expandedDiscussionId === msg.discussionId) {
         state.expandedDiscussionId = null;
       }
@@ -370,10 +505,26 @@ function handleMessage(msg) {
         state.maximizedDiscussionId = null;
       }
       renderDiscussions();
+      renderCombinedSummaries();
+      updateDiscussToolbar();
       refreshAllDiscussionHighlights();
       break;
 
     case "error":
+      if (msg.discussionId) {
+        setSummaryRuntime(msg.discussionId, { busy: false, streamingText: "" });
+        updateDiscussionSummaryDom(msg.discussionId, { busy: false });
+        updateDiscussionSummarizeBtn(msg.discussionId);
+        showToast(msg.message || "意图生成失败", "error");
+      } else if (msg.combinedSummaryId) {
+        setCombinedSummaryRuntime(msg.combinedSummaryId, {
+          busy: false,
+          streamingText: "",
+          phase: null,
+        });
+        updateCombinedSummaryDom(msg.combinedSummaryId, { busy: false });
+        showToast(msg.message || "合并意图生成失败", "error");
+      }
       if (state.savingAgent) {
         state.savingAgent = false;
         resetSaveAgentButton();
@@ -393,6 +544,7 @@ function handleMessage(msg) {
       }
       updateChrome();
       renderAgents();
+      updateDiscussToolbar();
       break;
   }
 }
@@ -471,6 +623,9 @@ function selectAgent(id, agentData) {
     fetchConversation(id);
   }
   send({ type: "list_discussions", agentId: id });
+  send({ type: "list_combined_summaries", agentId: id });
+  state.selectedDiscussionIds = new Set();
+  state.summarySectionOpen = new Set();
   renderAgents();
   updateChrome();
 }
@@ -1709,6 +1864,372 @@ function discussionPanelTitle(d) {
   return "讨论";
 }
 
+function getSummaryRuntime(discussionId) {
+  if (!state.summaryRuntimes[discussionId]) {
+    state.summaryRuntimes[discussionId] = { busy: false, streamingText: "" };
+  }
+  return state.summaryRuntimes[discussionId];
+}
+
+function setSummaryRuntime(discussionId, patch) {
+  const rt = getSummaryRuntime(discussionId);
+  Object.assign(rt, patch);
+}
+
+function isSummarySectionVisible(discussionId) {
+  const d = state.discussions.find((x) => x.id === discussionId);
+  const rt = getSummaryRuntime(discussionId);
+  if (rt.busy) return true;
+  if (state.summarySectionOpen.has(discussionId)) return true;
+  if (d?.summary && isActionableSummary(d.summary)) return true;
+  return false;
+}
+
+function openSummarySection(discussionId) {
+  state.summarySectionOpen.add(discussionId);
+  syncSummarySectionVisibility(discussionId);
+}
+
+function syncSummarySectionVisibility(discussionId) {
+  const panel = getDiscussionPanel(discussionId);
+  const section = panel?.querySelector(".discussion-summary");
+  if (!section) return;
+  section.classList.toggle("discussion-summary-hidden", !isSummarySectionVisible(discussionId));
+}
+
+function getCombinedSummaryRuntime(combinedId) {
+  if (!state.combinedSummaryRuntimes[combinedId]) {
+    state.combinedSummaryRuntimes[combinedId] = {
+      busy: false,
+      streamingText: "",
+      phase: null,
+      current: 0,
+      total: 0,
+    };
+  }
+  return state.combinedSummaryRuntimes[combinedId];
+}
+
+function setCombinedSummaryRuntime(combinedId, patch) {
+  const rt = getCombinedSummaryRuntime(combinedId);
+  Object.assign(rt, patch);
+}
+
+function isNoInstructionSummary(text) {
+  const t = String(text || "").trim();
+  return t === NO_INSTRUCTION_TEXT || NO_INSTRUCTION_LEGACY.has(t);
+}
+
+function isActionableSummary(text) {
+  const t = String(text || "").trim();
+  return t && !isNoInstructionSummary(t);
+}
+
+function injectSummaryToComposer(text) {
+  if (!isActionableSummary(text) || !mainComposer) return;
+  mainComposer.insertText(text.trim());
+  mainComposer.focus();
+  showToast("已注入主输入框");
+}
+
+function updateDiscussToolbar() {
+  const count = state.selectedDiscussionIds.size;
+  const btn = $("btn-summarize-selected");
+  const selectAll = $("discuss-select-all");
+  if (btn) {
+    btn.disabled = count === 0 || isAnySummaryBusy();
+    btn.textContent = count > 0 ? `生成意图 (${count})` : "生成意图";
+  }
+  if (selectAll) {
+    const allSelected =
+      state.discussions.length > 0 &&
+      state.discussions.every((d) => state.selectedDiscussionIds.has(d.id));
+    selectAll.checked = allSelected;
+    selectAll.indeterminate =
+      count > 0 && !allSelected && count < state.discussions.length;
+  }
+  for (const panel of document.querySelectorAll(".discussion-panel")) {
+    const cb = panel.querySelector(".discussion-select-cb");
+    if (cb) cb.checked = state.selectedDiscussionIds.has(panel.dataset.discussionId);
+  }
+}
+
+function isAnySummaryBusy() {
+  return (
+    Object.values(state.summaryRuntimes).some((rt) => rt.busy) ||
+    Object.values(state.combinedSummaryRuntimes).some((rt) => rt.busy)
+  );
+}
+
+function toggleDiscussionSelection(discussionId, selected) {
+  if (selected) state.selectedDiscussionIds.add(discussionId);
+  else state.selectedDiscussionIds.delete(discussionId);
+  updateDiscussToolbar();
+}
+
+function toggleSelectAllDiscussions(checked) {
+  state.selectedDiscussionIds = new Set();
+  if (checked) {
+    for (const d of state.discussions) state.selectedDiscussionIds.add(d.id);
+  }
+  updateDiscussToolbar();
+}
+
+function requestDiscussionSummary(discussionId, regenerate) {
+  const rt = getSummaryRuntime(discussionId);
+  if (rt.busy) return;
+  const current = state.discussions.find((x) => x.id === discussionId);
+  const hasSummary = !!(current?.summary && String(current.summary).trim());
+  const shouldRegenerate = regenerate ?? hasSummary;
+  openSummarySection(discussionId);
+  expandDiscussion(discussionId);
+  send({
+    type: "summarize_discussion",
+    discussionId,
+    regenerate: shouldRegenerate,
+  });
+}
+
+function saveDiscussionSummaryEdit(discussionId, text) {
+  const d = state.discussions.find((x) => x.id === discussionId);
+  if (!d || (d.summary || "") === text) return;
+  d.summary = text;
+  send({ type: "update_discussion_summary", discussionId, summary: text });
+}
+
+function updateDiscussionSummarizeBtn(discussionId) {
+  const panel = getDiscussionPanel(discussionId);
+  if (!panel) return;
+  const d = state.discussions.find((x) => x.id === discussionId);
+  const btn = panel.querySelector(".discussion-panel-summarize");
+  if (!btn || !d) return;
+  btn.title = d.summary ? "重新生成意图" : "生成意图";
+  btn.textContent = d.summary ? "↻" : "∑";
+  btn.disabled = getSummaryRuntime(discussionId).busy;
+}
+
+function updateDiscussionSummaryDom(discussionId, { busy, text }) {
+  const panel = getDiscussionPanel(discussionId);
+  if (!panel) return;
+  const section = panel.querySelector(".discussion-summary");
+  if (!section) return;
+  const textarea = section.querySelector(".discussion-summary-editor");
+  const injectBtn = section.querySelector(".discussion-summary-inject");
+  const summarizeBtn = panel.querySelector(".discussion-panel-summarize");
+  if (textarea && document.activeElement !== textarea) {
+    textarea.value = text ?? textarea.value;
+  } else if (textarea && busy) {
+    textarea.value = text ?? "";
+  }
+  section.classList.toggle("is-summarizing", !!busy);
+  section.classList.toggle("is-system-hint", isNoInstructionSummary(textarea?.value));
+  if (injectBtn) injectBtn.disabled = busy || !isActionableSummary(textarea?.value);
+  if (summarizeBtn) summarizeBtn.disabled = !!busy;
+  syncSummarySectionVisibility(discussionId);
+  updateDiscussToolbar();
+}
+
+function buildDiscussionSummarySection(d) {
+  const section = document.createElement("div");
+  section.className = "discussion-summary";
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "discussion-summary-editor";
+  textarea.rows = 4;
+  textarea.placeholder = "可在此编辑…";
+  textarea.value = d.summary || "";
+  textarea.onblur = () => saveDiscussionSummaryEdit(d.id, textarea.value.trim());
+  textarea.onclick = (e) => e.stopPropagation();
+
+  const footer = document.createElement("div");
+  footer.className = "discussion-summary-footer";
+
+  const injectBtn = document.createElement("button");
+  injectBtn.type = "button";
+  injectBtn.className = "discussion-summary-inject";
+  injectBtn.textContent = "注入主输入框";
+  injectBtn.disabled = !isActionableSummary(d.summary);
+  injectBtn.onclick = (e) => {
+    e.stopPropagation();
+    const textareaEl = section.querySelector(".discussion-summary-editor");
+    injectSummaryToComposer(textareaEl?.value || d.summary || "");
+  };
+
+  footer.appendChild(injectBtn);
+
+  section.appendChild(textarea);
+  section.appendChild(footer);
+  if (!isSummarySectionVisible(d.id)) {
+    section.classList.add("discussion-summary-hidden");
+  }
+  if (isNoInstructionSummary(d.summary)) {
+    section.classList.add("is-system-hint");
+  }
+  return section;
+}
+
+function formatCombinedSummaryTitle(item) {
+  const count = (item.discussionIds || []).length;
+  const date = item.createdAt ? new Date(item.createdAt).toLocaleString("zh-CN") : "";
+  return `${count} 条讨论${date ? ` · ${date}` : ""}`;
+}
+
+function combinedSummaryProgressLabel(rt) {
+  if (!rt?.busy) return "";
+  if (rt.phase === "individual") {
+    return `正在逐条提炼 ${rt.current}/${rt.total}…`;
+  }
+  if (rt.phase === "merge") return "正在合并意图…";
+  return "生成中…";
+}
+
+function saveCombinedSummaryEdit(combinedId, text) {
+  const item = state.combinedSummaries.find((c) => c.id === combinedId);
+  if (!item || (item.summary || "") === text) return;
+  item.summary = text;
+  send({ type: "update_combined_summary", combinedSummaryId: combinedId, summary: text });
+}
+
+function updateCombinedSummaryProgress(combinedId, rt) {
+  const card = document.querySelector(
+    `.combined-summary-card[data-combined-id="${combinedId}"]`
+  );
+  if (!card) return;
+  const progress = card.querySelector(".combined-summary-progress");
+  if (progress) progress.textContent = combinedSummaryProgressLabel(rt);
+}
+
+function updateCombinedSummaryDom(combinedId, { busy, text, phase, current, total }) {
+  const card = document.querySelector(
+    `.combined-summary-card[data-combined-id="${combinedId}"]`
+  );
+  if (!card) return;
+  const textarea = card.querySelector(".combined-summary-editor");
+  const injectBtn = card.querySelector(".combined-summary-inject");
+  const remergeBtn = card.querySelector(".combined-summary-remerge");
+  const regenBtn = card.querySelector(".combined-summary-regen");
+  const progress = card.querySelector(".combined-summary-progress");
+  if (textarea && document.activeElement !== textarea) {
+    textarea.value = text ?? textarea.value;
+  } else if (textarea && busy) {
+    textarea.value = text ?? "";
+  }
+  card.classList.toggle("is-summarizing", !!busy);
+  if (injectBtn) injectBtn.disabled = busy || !isActionableSummary(textarea?.value);
+  if (remergeBtn) remergeBtn.disabled = !!busy;
+  if (regenBtn) regenBtn.disabled = !!busy;
+  if (progress) {
+    progress.textContent = busy
+      ? combinedSummaryProgressLabel({ busy, phase, current, total })
+      : "";
+    progress.hidden = !progress.textContent;
+  }
+  updateDiscussToolbar();
+}
+
+function buildCombinedSummaryCard(item) {
+  const rt = getCombinedSummaryRuntime(item.id);
+  const card = document.createElement("div");
+  card.className = "combined-summary-card";
+  card.dataset.combinedId = item.id;
+  if (rt.busy) card.classList.add("is-summarizing");
+
+  const header = document.createElement("div");
+  header.className = "combined-summary-header";
+
+  const title = document.createElement("span");
+  title.className = "combined-summary-title";
+  title.textContent = formatCombinedSummaryTitle(item);
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "combined-summary-delete icon-btn";
+  deleteBtn.textContent = "×";
+  deleteBtn.title = "删除合并意图";
+  deleteBtn.onclick = () => {
+    send({ type: "delete_combined_summary", combinedSummaryId: item.id });
+  };
+
+  header.appendChild(title);
+  header.appendChild(deleteBtn);
+
+  const progress = document.createElement("div");
+  progress.className = "combined-summary-progress";
+  progress.textContent = combinedSummaryProgressLabel(rt);
+  progress.hidden = !progress.textContent;
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "combined-summary-editor";
+  textarea.rows = 5;
+  textarea.placeholder = "可在此编辑…";
+  textarea.value = rt.busy && rt.streamingText ? rt.streamingText : item.summary || "";
+  textarea.onblur = () => saveCombinedSummaryEdit(item.id, textarea.value.trim());
+
+  const footer = document.createElement("div");
+  footer.className = "combined-summary-footer";
+
+  const remergeBtn = document.createElement("button");
+  remergeBtn.type = "button";
+  remergeBtn.className = "combined-summary-remerge";
+  remergeBtn.textContent = "重新合并";
+  remergeBtn.title = "用当前各讨论的意图草稿重新合并";
+  remergeBtn.disabled = rt.busy;
+  remergeBtn.onclick = () => {
+    send({ type: "resummarize_combined", combinedSummaryId: item.id });
+  };
+
+  const regenBtn = document.createElement("button");
+  regenBtn.type = "button";
+  regenBtn.className = "combined-summary-regen";
+  regenBtn.textContent = "全部重生成";
+  regenBtn.title = "重新提炼各讨论意图并合并";
+  regenBtn.disabled = rt.busy;
+  regenBtn.onclick = () => {
+    send({
+      type: "resummarize_combined",
+      combinedSummaryId: item.id,
+      regenerateIndividuals: true,
+    });
+  };
+
+  const injectBtn = document.createElement("button");
+  injectBtn.type = "button";
+  injectBtn.className = "combined-summary-inject";
+  injectBtn.textContent = "注入主输入框";
+  injectBtn.disabled = rt.busy || !isActionableSummary(item.summary);
+  injectBtn.onclick = () => {
+    const textareaEl = card.querySelector(".combined-summary-editor");
+    injectSummaryToComposer(textareaEl?.value || item.summary || "");
+  };
+
+  footer.appendChild(remergeBtn);
+  footer.appendChild(regenBtn);
+  footer.appendChild(injectBtn);
+
+  card.appendChild(header);
+  card.appendChild(progress);
+  card.appendChild(textarea);
+  card.appendChild(footer);
+
+  return card;
+}
+
+function renderCombinedSummaries() {
+  const container = $("combined-summaries");
+  if (!container) return;
+  container.innerHTML = "";
+  if (!state.combinedSummaries.length) return;
+
+  const heading = document.createElement("div");
+  heading.className = "combined-summaries-heading";
+  heading.textContent = "合并意图";
+  container.appendChild(heading);
+
+  for (const item of state.combinedSummaries) {
+    container.appendChild(buildCombinedSummaryCard(item));
+  }
+}
+
 function syncExpandedDiscussionId() {
   if (
     state.expandedDiscussionId &&
@@ -1731,6 +2252,13 @@ function setExpandedDiscussion(discussionId) {
     state.expandedDiscussionId = discussionId;
     state.maximizedDiscussionId = null;
   }
+  syncDiscussionPanelStates();
+}
+
+function expandDiscussion(discussionId) {
+  if (!discussionId || state.expandedDiscussionId === discussionId) return;
+  state.expandedDiscussionId = discussionId;
+  state.maximizedDiscussionId = null;
   syncDiscussionPanelStates();
 }
 
@@ -1773,6 +2301,27 @@ function syncDiscussionPanelStates() {
 function buildDiscussionPanelHeader(d, drt) {
   const header = document.createElement("div");
   header.className = "discussion-panel-header";
+
+  const selectCb = document.createElement("input");
+  selectCb.type = "checkbox";
+  selectCb.className = "discussion-select-cb";
+  selectCb.checked = state.selectedDiscussionIds.has(d.id);
+  selectCb.title = "选中以合并生成意图";
+  selectCb.onclick = (e) => {
+    e.stopPropagation();
+    toggleDiscussionSelection(d.id, selectCb.checked);
+  };
+
+  const summarizeBtn = document.createElement("button");
+  summarizeBtn.type = "button";
+  summarizeBtn.className = "discussion-panel-summarize icon-btn";
+  summarizeBtn.title = d.summary ? "重新生成意图" : "生成意图";
+  summarizeBtn.textContent = d.summary ? "↻" : "∑";
+  summarizeBtn.disabled = getSummaryRuntime(d.id).busy;
+  summarizeBtn.onclick = (e) => {
+    e.stopPropagation();
+    requestDiscussionSummary(d.id);
+  };
 
   const titleBtn = document.createElement("button");
   titleBtn.type = "button";
@@ -1821,6 +2370,8 @@ function buildDiscussionPanelHeader(d, drt) {
   actions.appendChild(locateBtn);
   actions.appendChild(maxBtn);
   actions.appendChild(deleteBtn);
+  header.appendChild(selectCb);
+  header.appendChild(summarizeBtn);
   header.appendChild(titleBtn);
   header.appendChild(actions);
   return header;
@@ -1869,6 +2420,7 @@ function buildDiscussionPanel(d) {
   };
 
   panel.appendChild(body);
+  panel.appendChild(buildDiscussionSummarySection(d));
   return panel;
 }
 
@@ -1878,8 +2430,10 @@ function renderDiscussions() {
   if (!state.discussions.length) {
     state.expandedDiscussionId = null;
     state.maximizedDiscussionId = null;
+    state.selectedDiscussionIds = new Set();
     container.innerHTML = '<p class="discuss-empty">选中主对话文字后点击「讨论」</p>';
     $("discuss-rail")?.classList.remove("discussion-maximized");
+    updateDiscussToolbar();
     return;
   }
 
@@ -1892,9 +2446,14 @@ function renderDiscussions() {
     if (drt.busy) {
       updateDiscussionStreaming(d.id, drt);
     }
+    const srt = getSummaryRuntime(d.id);
+    if (srt.busy) {
+      updateDiscussionSummaryDom(d.id, { busy: true, text: srt.streamingText });
+    }
   }
   syncDiscussionPanelStates();
   scrollDiscussionPanelsToBottom();
+  updateDiscussToolbar();
 }
 
 function applyDiscussionStream(discussionId, msg) {
@@ -2035,7 +2594,25 @@ function quoteSearchCandidates(quoteText, anchor) {
   return candidates.filter((text) => text.length >= 2);
 }
 
-function wrapFirstTextMatch(root, search, discussionId) {
+function textOffsetWithin(root, node, offset) {
+  if (!root || !node) return -1;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      if (!n.textContent) return NodeFilter.FILTER_REJECT;
+      if (n.parentElement?.closest(".anchor-quote-highlight")) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let acc = 0;
+  let n;
+  while ((n = walker.nextNode())) {
+    if (n === node) return acc + Math.min(offset, n.textContent.length);
+    acc += n.textContent.length;
+  }
+  return -1;
+}
+
+function wrapFirstTextMatch(root, search, discussionId, offset) {
   if (!search || !root) return null;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
@@ -2053,7 +2630,13 @@ function wrapFirstTextMatch(root, search, discussionId) {
     full += n.textContent;
   }
 
-  const idx = full.indexOf(search);
+  let idx = -1;
+  const startFrom = Number.isFinite(offset) && offset > 0 ? offset : 0;
+  if (startFrom) {
+    const at = full.indexOf(search, startFrom);
+    if (at >= 0) idx = at;
+  }
+  if (idx < 0) idx = full.indexOf(search);
   if (idx < 0) return null;
   const endIdx = idx + search.length;
 
@@ -2094,8 +2677,10 @@ function wrapFirstTextMatch(root, search, discussionId) {
 function highlightQuoteInElement(root, anchor, discussionId) {
   const quote = String(anchor?.quote || "").trim();
   if (!root || !quote) return null;
+  const offset = Number(anchor?.offset);
+  const startFrom = Number.isFinite(offset) ? offset : -1;
   for (const candidate of quoteSearchCandidates(quote, anchor)) {
-    const found = wrapFirstTextMatch(root, candidate, discussionId);
+    const found = wrapFirstTextMatch(root, candidate, discussionId, startFrom);
     if (found) return found;
   }
   return null;
@@ -2182,10 +2767,18 @@ function startDiscussionFromSelection() {
 
   const messageIndex = resolveMessageIndexFromSelection(container);
 
+  const msgEl = container.closest?.(".msg");
+  const bodyEl = msgEl?.querySelector(".body") || null;
+  let anchorOffset = -1;
+  if (bodyEl && range.startContainer?.nodeType === Node.TEXT_NODE) {
+    anchorOffset = textOffsetWithin(bodyEl, range.startContainer, range.startOffset);
+  }
+
   const anchor = {
     messageIndex,
     quote,
   };
+  if (anchorOffset >= 0) anchor.offset = anchorOffset;
   if (serialized) anchor.quoteContent = serialized;
   if (attachments.length) anchor.attachments = attachments;
 
@@ -2369,6 +2962,17 @@ function bindUi() {
   bindClearPathButton("btn-clear-setup-cwd", "setup-cwd");
   $("btn-discuss-toggle").onclick = () => toggleDiscussRail();
   $("btn-discuss-close").onclick = () => toggleDiscussRail(false);
+  $("discuss-select-all")?.addEventListener("change", (e) => {
+    toggleSelectAllDiscussions(e.target.checked);
+  });
+  $("btn-summarize-selected")?.addEventListener("click", () => {
+    if (!state.activeAgentId || state.selectedDiscussionIds.size === 0) return;
+    send({
+      type: "summarize_discussions",
+      agentId: state.activeAgentId,
+      discussionIds: [...state.selectedDiscussionIds],
+    });
+  });
 
   $("setup-modal").addEventListener("click", (e) => {
     if (e.target === $("setup-modal") && $("setup-modal").dataset.required !== "1") hideSetup();

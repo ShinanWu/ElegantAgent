@@ -217,6 +217,50 @@ async def websocket_endpoint(ws: WebSocket):
             logger.exception("discussion_send failed")
             await emit({"type": "error", "message": "讨论消息发送失败"})
 
+    async def run_summarize_discussion(discussion_id: str, regenerate: bool) -> None:
+        nonlocal manager
+        manager = await ensure_manager()
+        if manager is None:
+            await emit({"type": "error", "message": "请先完成设置"})
+            return
+        try:
+            await manager.discussions.summarize_discussion(
+                discussion_id, emit, regenerate=regenerate
+            )
+        except Exception:
+            logger.exception("summarize_discussion failed")
+            await emit({"type": "error", "message": "讨论总结失败"})
+
+    async def run_summarize_discussions(
+        agent_id: str, discussion_ids: list, regenerate: bool
+    ) -> None:
+        nonlocal manager
+        manager = await ensure_manager()
+        if manager is None:
+            await emit({"type": "error", "message": "请先完成设置"})
+            return
+        try:
+            await manager.discussions.summarize_discussions(
+                agent_id, discussion_ids, emit, regenerate=regenerate
+            )
+        except Exception:
+            logger.exception("summarize_discussions failed")
+            await emit({"type": "error", "message": "合并总结失败"})
+
+    async def run_resummarize_combined(combined_id: str, regenerate_individuals: bool) -> None:
+        nonlocal manager
+        manager = await ensure_manager()
+        if manager is None:
+            await emit({"type": "error", "message": "请先完成设置"})
+            return
+        try:
+            await manager.discussions.resummarize_combined(
+                combined_id, emit, regenerate_individuals=regenerate_individuals
+            )
+        except Exception:
+            logger.exception("resummarize_combined failed")
+            await emit({"type": "error", "message": "重新合并总结失败"})
+
     await emit(
         {
             "type": "hello",
@@ -467,6 +511,130 @@ async def websocket_endpoint(ws: WebSocket):
                         {
                             "type": "discussion_deleted",
                             "discussionId": deleted.id,
+                            "agentId": deleted.agent_id,
+                        }
+                    )
+
+            elif msg_type == "summarize_discussion":
+                manager = await ensure_manager()
+                if manager is None:
+                    await emit({"type": "error", "message": "请先完成设置"})
+                    continue
+                asyncio.create_task(
+                    run_summarize_discussion(
+                        data["discussionId"],
+                        bool(data.get("regenerate")),
+                    )
+                )
+
+            elif msg_type == "update_discussion_summary":
+                manager = await ensure_manager()
+                if manager is None:
+                    await emit({"type": "error", "message": "请先完成设置"})
+                    continue
+                updated = manager.discussions.update_discussion_summary(
+                    data["discussionId"], data.get("summary", "")
+                )
+                if updated is None:
+                    await emit(
+                        {
+                            "type": "error",
+                            "discussionId": data.get("discussionId"),
+                            "message": "讨论不存在",
+                        }
+                    )
+                else:
+                    await emit(
+                        {
+                            "type": "discussion_summary_updated",
+                            "discussion": updated.to_dict(),
+                        }
+                    )
+
+            elif msg_type == "summarize_discussions":
+                manager = await ensure_manager()
+                if manager is None:
+                    await emit({"type": "error", "message": "请先完成设置"})
+                    continue
+                asyncio.create_task(
+                    run_summarize_discussions(
+                        data["agentId"],
+                        data.get("discussionIds") or [],
+                        bool(data.get("regenerate")),
+                    )
+                )
+
+            elif msg_type == "list_combined_summaries":
+                manager = await ensure_manager()
+                if manager is None:
+                    await emit({"type": "combined_summaries", "combinedSummaries": []})
+                    continue
+                items = manager.discussions.list_combined_for_agent(data["agentId"])
+                await emit(
+                    {
+                        "type": "combined_summaries",
+                        "agentId": data["agentId"],
+                        "combinedSummaries": items,
+                    }
+                )
+
+            elif msg_type == "update_combined_summary":
+                manager = await ensure_manager()
+                if manager is None:
+                    await emit({"type": "error", "message": "请先完成设置"})
+                    continue
+                updated = manager.discussions.update_combined_summary(
+                    data["combinedSummaryId"], data.get("summary", "")
+                )
+                if updated is None:
+                    await emit(
+                        {
+                            "type": "error",
+                            "combinedSummaryId": data.get("combinedSummaryId"),
+                            "message": "合并总结不存在",
+                        }
+                    )
+                else:
+                    await emit(
+                        {
+                            "type": "combined_summary_updated",
+                            "combinedSummary": updated.to_dict(),
+                        }
+                    )
+
+            elif msg_type == "resummarize_combined":
+                manager = await ensure_manager()
+                if manager is None:
+                    await emit({"type": "error", "message": "请先完成设置"})
+                    continue
+                asyncio.create_task(
+                    run_resummarize_combined(
+                        data["combinedSummaryId"],
+                        bool(data.get("regenerateIndividuals")),
+                    )
+                )
+
+            elif msg_type == "delete_combined_summary":
+                manager = await ensure_manager()
+                if manager is None:
+                    await emit({"type": "error", "message": "请先完成设置"})
+                    continue
+                deleted = manager.discussions.delete_combined_summary(
+                    data["combinedSummaryId"]
+                )
+                if deleted is None:
+                    await emit(
+                        {
+                            "type": "error",
+                            "combinedSummaryId": data.get("combinedSummaryId"),
+                            "message": "合并总结不存在",
+                        }
+                    )
+                else:
+                    await emit(
+                        {
+                            "type": "combined_summary_deleted",
+                            "combinedSummaryId": deleted.id,
                             "agentId": deleted.agent_id,
                         }
                     )

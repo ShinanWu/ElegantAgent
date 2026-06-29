@@ -79,9 +79,19 @@
       <aside id="discuss-rail" class="collapsed">
         <div id="discuss-header">
           <span>讨论</span>
+          <div class="discuss-toolbar">
+            <label class="discuss-select-all-label" title="全选讨论">
+              <input type="checkbox" id="discuss-select-all" />
+              <span>全选</span>
+            </label>
+            <button type="button" id="btn-summarize-selected" class="discuss-toolbar-btn" disabled>
+              生成意图
+            </button>
+          </div>
           <button id="btn-discuss-close" class="icon-btn" title="收起">×</button>
         </div>
         <div id="discussion-panels"></div>
+        <div id="combined-summaries"></div>
       </aside>
     </div>
 

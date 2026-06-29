@@ -15,6 +15,7 @@ from cursor_sdk import (
     SendOptions,
     UserMessage,
 )
+from cursor_sdk.errors import UnsupportedRunOperationError
 from cursor_sdk.types import SDKImage, SandboxOptions
 
 from .agent_workspace import (
@@ -45,6 +46,39 @@ T = TypeVar("T")
 
 IMAGE_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp"}
 
+_TERMINAL_RUN_STATUSES = frozenset(
+    {"cancelled", "canceled", "completed", "failed", "error", "done", "success"}
+)
+
+
+async def _safe_cancel_run(run: Any, *, agent_id: str = "") -> None:
+    if not run.supports("cancel"):
+        return
+    status = str(getattr(run, "status", "") or "").lower()
+    if status in _TERMINAL_RUN_STATUSES:
+        return
+    try:
+        await run.cancel()
+    except UnsupportedRunOperationError:
+        logger.debug(
+            "Run already terminal, skip cancel (agent=%s run=%s)",
+            agent_id or "?",
+            getattr(run, "id", "?"),
+        )
+    except Exception:
+        logger.exception("cancel run failed (agent=%s)", agent_id or "?")
+
+
+class _AgentSilentError(CursorAgentError):
+    """远端 agent 会话失效：send 完成但模型无任何输出。视为 stale agent 触发重建重试。"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "agent session produced no output (likely expired)",
+            code="agent_silent",
+            is_retryable=True,
+        )
+
 
 class AgentManager:
     def __init__(self, api_key: str, default_cwd: str, default_model: str) -> None:
@@ -58,6 +92,7 @@ class AgentManager:
         self._runs: dict[str, Any] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._cancel_requested: dict[str, bool] = {}
+        self._rebuilt_agents: set[str] = set()
 
     async def start(self) -> None:
         prepare_bridge_env()
@@ -129,6 +164,11 @@ class AgentManager:
     def _format_run_error(err: BaseException | None) -> str:
         if err is None:
             return "Agent 运行失败，请稍后重试。"
+        if isinstance(err, _AgentSilentError):
+            return (
+                "（多次重试后仍未收到模型输出。已自动重建 Agent 连接并回填本地对话历史，"
+                "但本轮仍未能恢复。请再发一次消息；若仍无回复，可新建 Agent 或检查 API Key / 网络。）"
+            )
         detail = str(err)
         if isinstance(err, CursorAgentError):
             parts = [p for p in (err.code, err.message) if p]
@@ -340,7 +380,7 @@ class AgentManager:
         )
         if isinstance(err, CursorAgentError):
             code = (err.code or "").lower()
-            if code in ("internal_error", "internal", "not_found", "failed_precondition"):
+            if code in ("internal_error", "internal", "not_found", "failed_precondition", "agent_silent"):
                 return True
         return any(p in text for p in patterns)
 
@@ -436,6 +476,43 @@ class AgentManager:
 
         return UserMessage(text=prompt, images=images or None)
 
+    def _rebuild_message_with_history(
+        self,
+        record: AgentRecord,
+        current: UserMessage | str,
+    ) -> UserMessage | str:
+        """重建 agent 后，把本地历史对话回填进当前消息，让新 agent 读到上文。
+
+        record.messages 末尾是本次刚 commit 的 user 消息，前面是历史。
+        只回填文本对话，工具调用/文件改动等内部状态无法重建，但对话语境可续。
+        """
+        history = record.messages[:-1] if record.messages else []
+        turns: list[str] = []
+        for m in history:
+            role = m.get("role")
+            content = str(m.get("content") or "").strip()
+            if not content:
+                continue
+            label = "用户" if role == "user" else "助手" if role == "assistant" else None
+            if label is None:
+                continue
+            turns.append(f"{label}: {content}")
+        if not turns:
+            return current
+
+        history_text = "\n\n".join(turns)
+        current_text = current.text if isinstance(current, UserMessage) else str(current)
+        current_images = current.images if isinstance(current, UserMessage) else None
+
+        rebuilt = (
+            "以下是我们之前的对话历史，请基于此上下文继续，"
+            "不要重复或总结历史，直接回应用户的最新消息：\n\n"
+            f"{history_text}\n\n"
+            "---\n\n"
+            f"用户最新消息：\n{current_text}"
+        )
+        return UserMessage(text=rebuilt, images=current_images)
+
     def _commit_message(self, record: AgentRecord, message: dict[str, Any]) -> int:
         record.messages.append(message)
         record.touch()
@@ -498,6 +575,7 @@ class AgentManager:
                 await self._execute_run_with_recovery(agent_id, record, user_message, emit)
             finally:
                 self._cancel_requested.pop(agent_id, None)
+                self._rebuilt_agents.discard(agent_id)
 
     async def _execute_run_with_recovery(
         self,
@@ -512,8 +590,10 @@ class AgentManager:
         for attempt in range(max_attempts):
             if attempt == 1:
                 self._reset_sdk_binding(record)
+                self._rebuilt_agents.add(agent_id)
             elif attempt == 2:
                 await self._restart_bridge()
+                self._rebuilt_agents.add(agent_id)
 
             try:
                 await self._run_once(agent_id, record, user_message, emit)
@@ -547,6 +627,7 @@ class AgentManager:
                 )
 
         self._runs.pop(agent_id, None)
+        self._rebuilt_agents.discard(agent_id)
         await emit(
             {
                 "type": "error",
@@ -612,19 +693,12 @@ class AgentManager:
             return self._assistant_message_from_segments(segments)
 
         logger.warning(
-            "Agent %s 运行结束但无输出 (status=%s, run=%s)，重置 SDK 绑定",
+            "Agent %s 运行结束但无输出 (status=%s, run=%s)，抛出 _AgentSilentError 触发重试",
             agent_id,
             getattr(result, "status", ""),
             getattr(result, "id", ""),
         )
-        self._reset_sdk_binding(record)
-        append_text_segment(
-            segments,
-            "（本次未收到模型输出，已重建与 Cursor 的 Agent 连接。"
-            "本应用内的聊天记录仍会保留；模型下一轮不再记得远端会话里的上文。"
-            "请再发一次消息；若仍无回复，可新建 Agent 或检查 API Key / 网络。）",
-        )
-        return self._assistant_message_from_segments(segments)
+        raise _AgentSilentError()
 
     async def _run_once(
         self,
@@ -634,6 +708,10 @@ class AgentManager:
         emit: EventCallback,
     ) -> None:
         sdk_agent = await self._ensure_sdk_agent(record)
+
+        if agent_id in self._rebuilt_agents:
+            user_message = self._rebuild_message_with_history(record, user_message)
+
         run = await sdk_agent.send(user_message)
         self._runs[agent_id] = run
         await emit(
@@ -679,6 +757,9 @@ class AgentManager:
             agent_id=agent_id,
         )
 
+        if agent_id in self._rebuilt_agents:
+            self._rebuilt_agents.discard(agent_id)
+
         index = self._commit_message(record, assistant_msg)
         await self._emit_message_committed(emit, agent_id, record, assistant_msg, index)
 
@@ -694,11 +775,7 @@ class AgentManager:
 
     async def _abort_run(self, agent_id: str, run: Any) -> None:
         self._runs.pop(agent_id, None)
-        if run.supports("cancel"):
-            try:
-                await run.cancel()
-            except Exception:
-                logger.exception("cancel run failed")
+        await _safe_cancel_run(run, agent_id=agent_id)
 
     async def cancel(self, agent_id: str, emit: EventCallback) -> None:
         self._cancel_requested[agent_id] = True

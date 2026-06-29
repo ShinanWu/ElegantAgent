@@ -43,6 +43,10 @@ def discussions_file() -> Path:
     return config_dir() / "discussions.json"
 
 
+def combined_summaries_file() -> Path:
+    return config_dir() / "combined_summaries.json"
+
+
 def log_file() -> Path:
     return config_dir() / "app.log"
 

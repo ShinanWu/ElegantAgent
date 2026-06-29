@@ -294,3 +294,102 @@ def build_discussion_prompt(
 
     parts.extend(["", f"用户问题:\n{question.strip()}"])
     return "\n\n".join(parts)
+
+
+def _discussion_title(anchor: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> str:
+    quote = str(anchor.get("quoteContent") or anchor.get("quote") or "")
+    quote = ATTACH_MARKER_RE.sub(
+        lambda m: (m.group(1).rstrip("/").split("/")[-1] or m.group(1)),
+        quote,
+    )
+    quote = re.sub(r"\s+", " ", quote).strip()
+    if quote and quote not in PLACEHOLDER_QUOTES:
+        return quote[:72] + ("…" if len(quote) > 72 else "")
+    attachments = anchor.get("attachments") or []
+    if attachments:
+        names = [str(a.get("name") or a.get("path") or "附件") for a in attachments]
+        return " · ".join(names)[:72]
+    for msg in messages or []:
+        if msg.get("role") == "user" and msg.get("content"):
+            content = str(msg["content"]).strip()
+            return content[:72] + ("…" if len(content) > 72 else "")
+    return "讨论"
+
+
+NO_INSTRUCTION_TEXT = "（未识别到意图）"
+NO_INSTRUCTION_LEGACY = frozenset(
+    {
+        "（无指令意图）",
+        "无指令意图",
+        "（无意图）",
+        "（未识别到意图）",
+    }
+)
+
+
+def is_no_instruction_summary(text: str | None) -> bool:
+    t = str(text or "").strip()
+    return t == NO_INSTRUCTION_TEXT or t in NO_INSTRUCTION_LEGACY
+
+
+def normalize_instruction_summary(text: str | None) -> str:
+    raw = str(text or "").strip()
+    if not raw or is_no_instruction_summary(raw):
+        return NO_INSTRUCTION_TEXT
+    return raw
+
+
+def build_discussion_summary_prompt(record: AgentRecord, discussion: Any) -> str:
+    anchor_text = format_discussion_anchor(record, discussion.anchor)
+    parts = [
+        "[讨论意图提炼 — 只读]",
+        "你的任务：判断下方讨论是否包含用户要对主 Agent 表达的明确下一步意图；若有，写一段可直接粘贴进主对话框的用户话术。",
+        "",
+        "输出要求：",
+        "- 仅当讨论中出现明确的待办、决策、执行请求或用户已表达要继续做的动作时，才输出意图话术",
+        "- 以用户第一人称、祈使口吻书写（例如「请…」「帮我…」「继续…」）",
+        "- 不要对讨论做客观复述，不要写「本讨论…」「双方认为…」",
+        "- 不要前言、后缀或 markdown 标题",
+        "- 禁止在无明确意图时编造「请继续…」「请记住…」等兜底内容",
+        f"- 系统未识别到明确意图时，只输出 exactly：{NO_INSTRUCTION_TEXT}（括号表示系统提示，非用户意图）",
+        "",
+        f"讨论主题: {_discussion_title(discussion.anchor, discussion.messages)}",
+        "",
+        "引用原文:",
+        anchor_text,
+        "",
+    ]
+    if discussion.messages:
+        parts.append("讨论内容:")
+        for msg in discussion.messages:
+            role = "用户" if msg.get("role") == "user" else "助手"
+            content = str(msg.get("content") or "").strip()
+            if content:
+                parts.append(f"{role}: {content}")
+        parts.append("")
+    else:
+        parts.append(f"（尚无追问；若引用原文本身也不含明确执行意图，输出：{NO_INSTRUCTION_TEXT}）")
+        parts.append("")
+    return "\n".join(parts)
+
+
+def build_combined_summary_prompt(
+    record: AgentRecord,
+    items: list[dict[str, str]],
+) -> str:
+    parts = [
+        "[合并意图提炼 — 只读]",
+        "以下是多条讨论各自提炼出的意图草稿。请合并为一段用户要对主 Agent 说的话。",
+        "",
+        "输出要求：",
+        f"- 仅合并含明确行动意图的草稿；草稿为 {NO_INSTRUCTION_TEXT} 或旧版系统标记的条目直接跳过",
+        f"- 若全部草稿均为系统未识别标记，只输出：{NO_INSTRUCTION_TEXT}",
+        "- 有可合并的意图时：第一人称、祈使口吻，去重合并，可直接发送",
+        "- 不要前言、后缀，不要编造草稿中未出现的行动",
+        "",
+    ]
+    for idx, item in enumerate(items, start=1):
+        parts.append(f"--- 讨论{idx}（{item.get('title', '讨论')}）的意图草稿 ---")
+        parts.append(item.get("summary", "").strip() or NO_INSTRUCTION_TEXT)
+        parts.append("")
+    return "\n".join(parts).strip()

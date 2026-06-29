@@ -6,24 +6,21 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .paths import discussions_file
+from .paths import combined_summaries_file
 
 
 @dataclass
-class Discussion:
+class CombinedSummary:
     id: str
     agent_id: str
-    anchor: dict[str, Any]
-    messages: list[dict[str, Any]] = field(default_factory=list)
+    discussion_ids: list[str]
+    summary: str = ""
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     updated_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
-    collapsed: bool = False
-    summary: str | None = None
-    summary_updated_at: str | None = None
 
     def touch(self) -> None:
         self.updated_at = datetime.now(timezone.utc).isoformat()
@@ -32,34 +29,31 @@ class Discussion:
         return {
             "id": self.id,
             "agentId": self.agent_id,
-            "anchor": self.anchor,
-            "messages": self.messages,
+            "discussionIds": self.discussion_ids,
+            "summary": self.summary,
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
-            "collapsed": self.collapsed,
-            "summary": self.summary,
-            "summaryUpdatedAt": self.summary_updated_at,
         }
 
 
-def new_discussion(agent_id: str, anchor: dict[str, Any]) -> Discussion:
-    return Discussion(
+def new_combined_summary(agent_id: str, discussion_ids: list[str]) -> CombinedSummary:
+    return CombinedSummary(
         id=str(uuid.uuid4()),
         agent_id=agent_id,
-        anchor=anchor,
+        discussion_ids=list(discussion_ids),
     )
 
 
-def load_discussions() -> dict[str, Discussion]:
-    path = discussions_file()
+def load_combined_summaries() -> dict[str, CombinedSummary]:
+    path = combined_summaries_file()
     if not path.exists():
         return {}
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return {did: Discussion(**data) for did, data in raw.items()}
+    return {cid: CombinedSummary(**data) for cid, data in raw.items()}
 
 
-def save_discussions(discussions: dict[str, Discussion]) -> None:
-    path = discussions_file()
+def save_combined_summaries(summaries: dict[str, CombinedSummary]) -> None:
+    path = combined_summaries_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {did: asdict(rec) for did, rec in discussions.items()}
+    payload = {cid: asdict(rec) for cid, rec in summaries.items()}
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
