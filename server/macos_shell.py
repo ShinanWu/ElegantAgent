@@ -133,6 +133,36 @@ class MacAppShell:
         self._ensure_app_delegate()
         self._rebind_window_delegates()
         self._enable_clipboard_access()
+        self._apply_unified_titlebar()
+
+    def _apply_unified_titlebar(self) -> None:
+        """去掉标题栏底部分隔线并统一底色；保留系统标题栏以便拖动窗口。"""
+        if sys.platform != "darwin":
+            return
+        try:
+            import AppKit
+            from webview.platforms import cocoa
+
+            bg = AppKit.NSColor.colorWithRed_green_blue_alpha_(0x0B / 255.0, 0x0D / 255.0, 0x12 / 255.0, 1.0)
+            separator_none = getattr(AppKit, "NSTitlebarSeparatorStyleNone", None)
+
+            for inst in cocoa.BrowserView.instances.values():
+                win = inst.window
+                win.setBackgroundColor_(bg)
+                if separator_none is not None:
+                    win.setTitlebarSeparatorStyle_(separator_none)
+
+                # pywebview 非 frameless 时会把标题栏染成系统 windowBackgroundColor，改回应用底色
+                try:
+                    frame = win.contentView().superview()
+                    for sub in frame.subviews():
+                        sub.setBackgroundColor_(bg)
+                except Exception:
+                    pass
+
+            logger.info("已应用 macOS 融合标题栏（保留原生拖动）")
+        except Exception:
+            logger.exception("应用 macOS 融合标题栏失败")
 
     def _enable_clipboard_access(self) -> None:
         """允许 WKWebView 通过 JS 访问剪贴板（右键粘贴 / navigator.clipboard）。"""

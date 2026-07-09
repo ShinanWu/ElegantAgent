@@ -141,6 +141,7 @@ def _open_window(url: str) -> None:
         min_size=(960, 640),
         text_select=True,
         confirm_close=False,
+        background_color="#0b0d12",
         js_api=api,
     )
     _shell.attach_window(window, url=url)
