@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="public/app-logo-hero.png" alt="尤雅" width="192" />
+  <img src="public/app-logo-hero.png" alt="yoya" width="192" />
 </p>
 
-<h1 align="center">尤雅 · ElegantAgent</h1>
+<h1 align="center">yoya</h1>
 
 <p align="center">
   一款 macOS 桌面 Agent 应用，基于 <a href="https://cursor.com/docs/sdk/python">Cursor Python SDK</a>，<br />
@@ -17,17 +17,17 @@
 
 ---
 
-## 为什么是尤雅
+## 为什么是 yoya
 
 大多数 Agent 工具把「能做什么」堆得很满，却很少有人认真回答：**怎样才算用得舒服**。
 
-尤雅从三个问题出发：
+yoya 从三个问题出发：
 
 1. **什么必须留在界面上？** —— 对话、上下文、必要的控制，其余一律让位。
 2. **什么应该从第一性原理重建？** —— 讨论、记忆注入，不照搬 IDE，只为 Agent 场景设计。
 3. **怎样才算优雅？** —— 少打断、少层级、少心智负担；你表达意图，Agent 处理细节。
 
-因此尤雅选择 **Pi 式极简界面** + **单 Agent 单主线对话** + **选中即可讨论** 的轻量协作方式，而不是再造一个臃肿工作台。
+因此 yoya 选择 **极简界面** + **单 Agent 单主线对话** + **选中即可讨论** 的轻量协作方式，而不是再造一个臃肿工作台。
 
 ## 核心能力
 
@@ -36,19 +36,19 @@
 
 ## 用户安装（macOS）
 
-1. 在 [Releases](https://github.com/ShinanWu/ElegantAgent/releases/latest) 下载 `CursorAgentPi.pkg`
+1. 在 [Releases](https://github.com/ShinanWu/ElegantAgent/releases/latest) 下载 `yoya.pkg`
 2. **目前仅支持 Apple 芯片（Apple Silicon）**，Intel Mac 无法运行
-3. 双击安装包。若提示 **「Apple 无法验证 CursorAgentPi.pkg」**（未公证的独立软件常见提示，并非恶意软件），请打开 **系统设置 → 隐私与安全性**，在页面底部找到被拦截的安装包，点 **仍要打开**，再重新双击安装。若应用能打开但无法发消息，可在终端执行 `xattr -cr /Applications/尤雅.app` 后再试
-4. 在「应用程序」中打开 **尤雅**；若首次启动仍有相同提示，同样在 **隐私与安全性** 中点 **仍要打开**
+3. 双击安装包。若提示 **「Apple 无法验证 yoya.pkg」**（未公证的独立软件常见提示，并非恶意软件），请打开 **系统设置 → 隐私与安全性**，在页面底部找到被拦截的安装包，点 **仍要打开**，再重新双击安装。若应用能打开但无法发消息，可在终端执行 `xattr -cr /Applications/yoya.app` 后再试
+4. 在「应用程序」中打开 **yoya**；若首次启动仍有相同提示，同样在 **隐私与安全性** 中点 **仍要打开**
 5. 填写 [Cursor API Key](https://cursor.com/dashboard/api?section=user-keys#user-api-keys) 即可开始
 
 配置与数据目录：
 
-`~/Library/Application Support/CursorAgentPi/`
+`~/Library/Application Support/yoya/`
 
 运行日志：
 
-`~/Library/Application Support/CursorAgentPi/app.log`
+`~/Library/Application Support/yoya/app.log`
 
 ## 开发者
 
@@ -68,7 +68,7 @@ python run.py
 ./scripts/build_macos.sh
 ```
 
-产物：`dist/CursorAgentPi.pkg`
+产物：`dist/yoya.pkg`
 
 打包脚本使用清华 PyPI 镜像，并内置前端静态资源，安装后可离线使用界面。当前产物为 Apple Silicon。若本机已配置 Developer ID：
 

@@ -73,7 +73,7 @@ async def lifespan(_: FastAPI):
         if APP_CONFIG.is_configured:
             asyncio.create_task(boot_engine(APP_CONFIG))
         url = f"http://{HOST}:{PORT}"
-        logger.info("尤雅 运行于 %s", url)
+        logger.info("yoya 运行于 %s", url)
         if os.environ.get("OPEN_BROWSER", "1") == "1" and not os.environ.get(
             "CURSOR_AGENT_NO_BROWSER"
         ):
@@ -81,7 +81,7 @@ async def lifespan(_: FastAPI):
         yield
 
 
-app = FastAPI(title="尤雅", lifespan=lifespan)
+app = FastAPI(title="yoya", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=PUBLIC), name="static")
 
 

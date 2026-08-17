@@ -1,8 +1,8 @@
-const LAST_AGENT_KEY = "cursor-agent-pi:last-agent";
-const FONT_SIZE_KEY = "cursor-agent-pi:font-size";
-const SCROLL_PREFIX = "cursor-agent-pi:scroll:";
+const LAST_AGENT_KEY = "yoya:last-agent";
+const FONT_SIZE_KEY = "yoya:font-size";
+const SCROLL_PREFIX = "yoya:scroll:";
 const ATTACH_MARKER_RE = /\[\[πattach:(.*?)\]\]/g;
-const AGENT_PI_CLIPBOARD = "application/x-cursor-agent-pi-attachments";
+const YOYA_CLIPBOARD = "application/x-yoya-attachments";
 
 function encodeAttachmentMarker(path) {
   return `[[πattach:${path}]]`;
@@ -2018,7 +2018,7 @@ function handleInlineCopy(e) {
   e.preventDefault();
   e.clipboardData.setData("text/plain", payload.text);
   if (payload.attachments.length) {
-    e.clipboardData.setData(AGENT_PI_CLIPBOARD, JSON.stringify(payload.attachments));
+    e.clipboardData.setData(YOYA_CLIPBOARD, JSON.stringify(payload.attachments));
   }
   e.clipboardData.setData("text/html", payload.html);
 }
@@ -2032,7 +2032,7 @@ async function copyCurrentSelection() {
       "text/html": new Blob([payload.html], { type: "text/html" }),
     };
     if (payload.attachments.length) {
-      items[AGENT_PI_CLIPBOARD] = new Blob([JSON.stringify(payload.attachments)], {
+      items[YOYA_CLIPBOARD] = new Blob([JSON.stringify(payload.attachments)], {
         type: "application/json",
       });
     }
@@ -2053,7 +2053,7 @@ function clipboardDataFromPayload(payload) {
     getData(type) {
       if (type === "text/plain") return payload?.text || "";
       if (type === "text/html") return payload?.html || "";
-      if (type === AGENT_PI_CLIPBOARD) return payload?.custom || "";
+      if (type === YOYA_CLIPBOARD) return payload?.custom || "";
       return "";
     },
     files: [],
@@ -2070,8 +2070,8 @@ async function pasteClipboardToComposer() {
   try {
     const items = await navigator.clipboard.read();
     for (const item of items) {
-      if (item.types.includes(AGENT_PI_CLIPBOARD)) {
-        const customRaw = await (await item.getType(AGENT_PI_CLIPBOARD)).text();
+      if (item.types.includes(YOYA_CLIPBOARD)) {
+        const customRaw = await (await item.getType(YOYA_CLIPBOARD)).text();
         let attachments = [];
         try {
           attachments = JSON.parse(customRaw);
@@ -2113,7 +2113,7 @@ async function applyComposerPaste(cd) {
   if (!cd || !mainComposer) return false;
   if (mainComposer.handlePaste(cd)) return true;
 
-  const customRaw = cd.getData(AGENT_PI_CLIPBOARD);
+  const customRaw = cd.getData(YOYA_CLIPBOARD);
   if (customRaw) {
     let attachments = [];
     try {

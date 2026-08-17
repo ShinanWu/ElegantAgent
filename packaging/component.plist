@@ -12,7 +12,7 @@
     <key>BundleOverwriteAction</key>
     <string>upgrade</string>
     <key>RootRelativeBundlePath</key>
-    <string>尤雅.app</string>
+    <string>yoya.app</string>
   </dict>
 </array>
 </plist>

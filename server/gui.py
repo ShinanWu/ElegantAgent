@@ -17,7 +17,7 @@ from .shutdown import bind_uvicorn, shutdown_all
 
 logger = logging.getLogger(__name__)
 
-APP_TITLE = "尤雅"
+APP_TITLE = "yoya"
 _lock_fd: int | None = None
 _shell = MacAppShell()
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""尤雅 应用入口（开发 / PyInstaller 共用）。"""
+"""yoya 应用入口（开发 / PyInstaller 共用）。"""
 
 from __future__ import annotations
 

@@ -4,11 +4,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$ROOT/dist"
-APP_NAME="尤雅.app"
-PKG_ID="com.cursor.agent.pi"
-PKG_VERSION="1.0.4"
-COMPONENT_PKG="$DIST/CursorAgentPi-component.pkg"
-PRODUCT_PKG="$DIST/CursorAgentPi.pkg"
+APP_NAME="yoya.app"
+PKG_ID="com.yoya.app"
+PKG_VERSION="1.0.5"
+COMPONENT_PKG="$DIST/yoya-component.pkg"
+PRODUCT_PKG="$DIST/yoya.pkg"
 COMPONENT_PLIST="$ROOT/packaging/component.plist"
 
 APP_BUNDLE="$DIST/$APP_NAME"
@@ -38,7 +38,7 @@ productbuild \
   "$PRODUCT_PKG"
 
 rm -f "$COMPONENT_PKG"
-rm -rf "$DIST/CursorAgentPi" "$DIST/$APP_NAME"
+rm -rf "$DIST/yoya" "$DIST/$APP_NAME"
 
 echo ""
 echo "完成："

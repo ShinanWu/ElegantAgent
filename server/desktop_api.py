@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-AGENT_PI_CLIPBOARD = "application/x-cursor-agent-pi-attachments"
+YOYA_CLIPBOARD = "application/x-yoya-attachments"
 
 
 def enable_drop_path_capture() -> None:
@@ -88,7 +88,7 @@ class DesktopApi:
             text = pb.stringForType_("public.utf8-plain-text") or pb.stringForType_("NSStringPboardType") or ""
             html = pb.stringForType_("public.html") or pb.stringForType_("NSHTMLPboardType") or ""
             custom = ""
-            for uti in (AGENT_PI_CLIPBOARD,):
+            for uti in (YOYA_CLIPBOARD,):
                 if uti in types:
                     value = pb.stringForType_(uti)
                     if value:
@@ -96,7 +96,7 @@ class DesktopApi:
                         break
             if not custom:
                 for uti in types:
-                    if "cursor-agent-pi" in str(uti).lower():
+                    if "yoya" in str(uti).lower():
                         value = pb.stringForType_(uti)
                         if value:
                             custom = str(value)

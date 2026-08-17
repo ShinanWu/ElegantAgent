@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 _LOGGING_CONFIGURED = False
+APP_DIR_NAME = "yoya"
 
 
 def is_frozen() -> bool:
@@ -25,11 +26,11 @@ def resource_root() -> Path:
 
 def config_dir() -> Path:
     if sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support" / "CursorAgentPi"
+        base = Path.home() / "Library" / "Application Support" / APP_DIR_NAME
     elif os.name == "nt":
-        base = Path(os.environ.get("APPDATA", Path.home())) / "CursorAgentPi"
+        base = Path(os.environ.get("APPDATA", Path.home())) / APP_DIR_NAME
     else:
-        base = Path.home() / ".config" / "cursor-agent-pi"
+        base = Path.home() / ".config" / APP_DIR_NAME
     base.mkdir(parents=True, exist_ok=True)
     return base
 

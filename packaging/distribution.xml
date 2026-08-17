@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
-    <title>尤雅</title>
-    <organization>com.cursor.agent.pi</organization>
+    <title>yoya</title>
+    <organization>com.yoya.app</organization>
     <domains enable_localSystem="true"/>
     <options customize="never" require-scripts="false" rootVolumeOnly="true"/>
     <welcome file="welcome.html" mime-type="text/html"/>
     <conclusion file="conclusion.html" mime-type="text/html"/>
     <choices-outline>
         <line choice="default">
-            <line choice="com.cursor.agent.pi.pkg"/>
+            <line choice="com.yoya.app.pkg"/>
         </line>
     </choices-outline>
     <choice id="default"/>
-    <choice id="com.cursor.agent.pi.pkg" visible="false">
-        <pkg-ref id="com.cursor.agent.pi"/>
+    <choice id="com.yoya.app.pkg" visible="false">
+        <pkg-ref id="com.yoya.app"/>
     </choice>
-    <pkg-ref id="com.cursor.agent.pi" version="1.0.4" onConclusion="none">CursorAgentPi-component.pkg</pkg-ref>
+    <pkg-ref id="com.yoya.app" version="1.0.5" onConclusion="none">yoya-component.pkg</pkg-ref>
 </installer-gui-script>

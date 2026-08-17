@@ -75,7 +75,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="CursorAgentPi",
+    name="yoya",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -95,21 +95,21 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="CursorAgentPi",
+    name="yoya",
 )
 
 app = BUNDLE(
     coll,
-    name="尤雅.app",
+    name="yoya.app",
     icon=str(project_root / "packaging" / "AppIcon.icns")
     if (project_root / "packaging" / "AppIcon.icns").exists()
     else None,
-    bundle_identifier="com.cursor.agent.pi",
+    bundle_identifier="com.yoya.app",
     info_plist={
-        "CFBundleName": "尤雅",
-        "CFBundleDisplayName": "尤雅",
-        "CFBundleVersion": "1.0.4",
-        "CFBundleShortVersionString": "1.0.4",
+        "CFBundleName": "yoya",
+        "CFBundleDisplayName": "yoya",
+        "CFBundleVersion": "1.0.5",
+        "CFBundleShortVersionString": "1.0.5",
         # PyInstaller 默认会写成 "AppIcon.icns"（带扩展名），导致系统找不到图标
         "CFBundleIconFile": "AppIcon",
         "CFBundleIconName": "AppIcon",

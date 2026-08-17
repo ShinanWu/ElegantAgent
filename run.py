@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""启动尤雅（开发模式）。"""
+"""启动 yoya（开发模式）。"""
 
 from launcher import main
 
