@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
+
+_LOGGING_CONFIGURED = False
 
 
 def is_frozen() -> bool:
@@ -49,6 +52,36 @@ def combined_summaries_file() -> Path:
 
 def log_file() -> Path:
     return config_dir() / "app.log"
+
+
+def configure_logging() -> None:
+    """同时写控制台与 app.log。打包版 console=False 时文件日志是唯一排障途径。"""
+    global _LOGGING_CONFIGURED
+    if _LOGGING_CONFIGURED:
+        return
+    _LOGGING_CONFIGURED = True
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    has_stream = any(
+        isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
+        for handler in root.handlers
+    )
+    if not has_stream:
+        stream = logging.StreamHandler()
+        stream.setFormatter(formatter)
+        root.addHandler(stream)
+
+    try:
+        path = log_file()
+        file_handler = logging.FileHandler(path, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+        logging.getLogger(__name__).info("日志写入 %s", path)
+    except OSError:
+        logging.getLogger(__name__).warning("无法创建日志文件 %s", log_file())
 
 
 def load_dotenv_if_present() -> None:

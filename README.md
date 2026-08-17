@@ -37,13 +37,18 @@
 ## 用户安装（macOS）
 
 1. 在 [Releases](https://github.com/ShinanWu/ElegantAgent/releases/latest) 下载 `CursorAgentPi.pkg`
-2. 双击安装包。若提示 **「Apple 无法验证 CursorAgentPi.pkg」**（未公证的独立软件常见提示，并非恶意软件），请打开 **系统设置 → 隐私与安全性**，在页面底部找到被拦截的安装包，点 **仍要打开**，再重新双击安装
-3. 在「应用程序」中打开 **尤雅**；若首次启动仍有相同提示，同样在 **隐私与安全性** 中点 **仍要打开**
-4. 填写 [Cursor API Key](https://cursor.com/dashboard/api?section=user-keys#user-api-keys) 即可开始
+2. **目前仅支持 Apple 芯片（Apple Silicon）**，Intel Mac 无法运行
+3. 双击安装包。若提示 **「Apple 无法验证 CursorAgentPi.pkg」**（未公证的独立软件常见提示，并非恶意软件），请打开 **系统设置 → 隐私与安全性**，在页面底部找到被拦截的安装包，点 **仍要打开**，再重新双击安装。若应用能打开但无法发消息，可在终端执行 `xattr -cr /Applications/尤雅.app` 后再试
+4. 在「应用程序」中打开 **尤雅**；若首次启动仍有相同提示，同样在 **隐私与安全性** 中点 **仍要打开**
+5. 填写 [Cursor API Key](https://cursor.com/dashboard/api?section=user-keys#user-api-keys) 即可开始
 
 配置与数据目录：
 
 `~/Library/Application Support/CursorAgentPi/`
+
+运行日志：
+
+`~/Library/Application Support/CursorAgentPi/app.log`
 
 ## 开发者
 
@@ -65,7 +70,13 @@ python run.py
 
 产物：`dist/CursorAgentPi.pkg`
 
-打包脚本使用清华 PyPI 镜像，并内置前端静态资源，安装后可离线使用界面。
+打包脚本使用清华 PyPI 镜像，并内置前端静态资源，安装后可离线使用界面。当前产物为 Apple Silicon。若本机已配置 Developer ID：
+
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/build_macos.sh
+```
+
+公证还需设置 `APPLE_ID`、`APPLE_TEAM_ID`、`APPLE_APP_PASSWORD`。未签名时用户仍需在「隐私与安全性」中点「仍要打开」。
 
 ## 配置项
 

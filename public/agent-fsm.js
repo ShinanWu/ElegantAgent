@@ -210,10 +210,6 @@ const AgentFSM = (() => {
         applyMeta(agent, payload);
         if (payload.running) {
           agent.phase = Phase.RUNNING;
-        } else if (agent.phase === Phase.RUNNING && !payload.running) {
-          agent.phase = Phase.IDLE;
-          clearStream(agent);
-          result.streamChanged = true;
         }
         if (incoming.length < local.length) {
           result.needsResync = false;
@@ -259,9 +255,16 @@ const AgentFSM = (() => {
       }
 
       case "run_started":
+        const alreadyRunning = agent.phase === Phase.RUNNING;
         agent.phase = Phase.RUNNING;
-        clearStream(agent);
-        result.streamChanged = true;
+        if (!alreadyRunning || payload.runId) {
+          clearStream(agent);
+          result.streamChanged = true;
+        }
+        if (payload.activity) {
+          agent.stream.activityText = payload.activity;
+          result.streamChanged = true;
+        }
         break;
 
       case "stream": {
@@ -303,10 +306,6 @@ const AgentFSM = (() => {
   function syncServerRunning(agent, running, result) {
     if (running && agent.phase === Phase.IDLE) {
       agent.phase = Phase.RUNNING;
-    } else if (!running && agent.phase === Phase.RUNNING) {
-      agent.phase = Phase.IDLE;
-      clearStream(agent);
-      result.streamChanged = true;
     }
   }
 

@@ -55,10 +55,6 @@
             <button type="button" class="context-menu-item" data-action="paste" role="menuitem">粘贴</button>
             <button type="button" class="context-menu-item" data-action="discuss" role="menuitem">讨论</button>
           </div>
-          <div id="run-status-bar" class="hidden">
-            <span id="run-status-text" class="run-status-label running">Agent 运行中…</span>
-            <button id="btn-stop-run" type="button" tabindex="-1">停止</button>
-          </div>
         </div>
 
         <div id="composer-wrap">
@@ -113,7 +109,7 @@
           </div>
 
           <label class="field-label" for="agent-model-input">模型</label>
-          <input id="agent-model-input" type="text" />
+          <select id="agent-model-input" class="settings-select"></select>
 
           <div class="toggle-row">
             <label><input type="checkbox" id="toggle-soul" /> 注入 Soul</label>
@@ -133,6 +129,13 @@
             <button id="btn-pick-rules-dir" type="button" class="secondary-btn">选择…</button>
             <button id="btn-clear-rules-dir" type="button" class="secondary-btn subtle-btn" title="置空">清除</button>
           </div>
+          <div class="config-files-block">
+            <div class="config-files-toolbar">
+              <span class="config-files-title">Rules 文件</span>
+              <button type="button" class="secondary-btn subtle-btn" id="btn-new-rules-file">新建</button>
+            </div>
+            <div id="rules-tree" class="config-file-tree"></div>
+          </div>
 
           <label class="field-label" for="skills-dir-input">Skills 目录</label>
           <div class="path-row">
@@ -140,12 +143,34 @@
             <button id="btn-pick-skills-dir" type="button" class="secondary-btn">选择…</button>
             <button id="btn-clear-skills-dir" type="button" class="secondary-btn subtle-btn" title="置空">清除</button>
           </div>
+          <div class="config-files-block">
+            <div class="config-files-toolbar">
+              <span class="config-files-title">Skills 文件</span>
+              <button type="button" class="secondary-btn subtle-btn" id="btn-new-skills-file">新建</button>
+            </div>
+            <div id="skills-tree" class="config-file-tree"></div>
+          </div>
 
           <label class="field-label" for="memory-dir-input">Memory 目录</label>
           <div class="path-row">
             <input id="memory-dir-input" type="text" readonly placeholder="点击右侧按钮选择目录（留空则用 .agent/memory）" />
             <button id="btn-pick-memory-dir" type="button" class="secondary-btn">选择…</button>
             <button id="btn-clear-memory-dir" type="button" class="secondary-btn subtle-btn" title="置空">清除</button>
+          </div>
+          <div class="config-files-block">
+            <div class="config-files-toolbar">
+              <span class="config-files-title">Memory 文件</span>
+              <button type="button" class="secondary-btn subtle-btn" id="btn-new-memory-file">新建</button>
+            </div>
+            <div id="memory-tree" class="config-file-tree"></div>
+          </div>
+
+          <div id="config-file-editor" class="config-file-editor hidden">
+            <div class="config-file-editor-bar">
+              <span id="config-file-label" class="config-file-label"></span>
+              <button type="button" id="btn-save-config-file" class="secondary-btn">保存文件</button>
+            </div>
+            <textarea id="config-file-body" rows="12" placeholder="选择上方文件进行编辑…"></textarea>
           </div>
 
           <p id="drawer-save-status" class="drawer-save-status" aria-live="polite"></p>
@@ -175,7 +200,7 @@
           <button id="btn-clear-setup-cwd" type="button" class="secondary-btn subtle-btn" title="置空">清除</button>
         </div>
         <label class="field-label" for="setup-model">默认模型</label>
-        <input id="setup-model" type="text" value="composer-2.5" />
+        <select id="setup-model" class="settings-select"></select>
         <p id="setup-error" class="setup-error"></p>
         <button id="btn-setup-save" class="setup-primary">保存并开始</button>
       </div>
@@ -209,7 +234,7 @@
         </div>
 
         <label class="field-label" for="system-default-model">默认模型</label>
-        <input id="system-default-model" type="text" />
+        <select id="system-default-model" class="settings-select"></select>
 
         <p id="system-settings-error" class="setup-error"></p>
         <button id="btn-system-settings-save" type="button" class="setup-primary">保存</button>

@@ -93,8 +93,32 @@ _TERMINAL_ACTIVITY = frozenset(
 )
 
 
+_GENERIC_ACTIVITY = frozenset(
+    {
+        "running",
+        "in_progress",
+        "in progress",
+        "pending",
+        "processing",
+        "working",
+        "busy",
+        "started",
+        "start",
+    }
+)
+
+
 def _is_terminal_activity(text: str) -> bool:
     return text.strip().lower() in _TERMINAL_ACTIVITY
+
+
+def _activity_label(text: str) -> str | None:
+    raw = str(text or "").strip()
+    if not raw or _is_terminal_activity(raw):
+        return None
+    if raw.lower() in _GENERIC_ACTIVITY:
+        return "Agent 运行中…"
+    return raw
 
 
 def stream_payload_blocks(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -303,19 +327,17 @@ def serialize_stream_message(message: Any) -> dict[str, Any] | None:
 
     if msg_type == "status":
         text = getattr(message, "message", "") or getattr(message, "status", "")
-        if not text:
+        label = _activity_label(str(text or ""))
+        if not label:
             return None
-        if _is_terminal_activity(str(text)):
-            return None
-        return {"activity": str(text), "activityRunning": True}
+        return {"activity": label, "activityRunning": True}
 
     if msg_type == "task":
         text = getattr(message, "text", "") or getattr(message, "status", "")
-        if not text:
+        label = _activity_label(str(text or ""))
+        if not label:
             return None
-        if _is_terminal_activity(str(text)):
-            return None
-        return {"activity": str(text), "activityRunning": True}
+        return {"activity": label, "activityRunning": True}
 
     if msg_type == "tool_call":
         name = getattr(message, "name", "tool") or "tool"

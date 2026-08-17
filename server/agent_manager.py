@@ -29,6 +29,7 @@ from .agent_workspace import (
 from .agents import AgentRecord, load_agents, new_agent, save_agents
 from .bridge_env import bridge_state_root, prepare_bridge_env, workspace_path
 from .discussion_manager import DiscussionManager
+from .images import prepare_image_for_sdk
 from .prompt_builder import build_prompt_text, merge_user_display_content
 from .stream_format import (
     append_text_segment,
@@ -45,6 +46,7 @@ EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 T = TypeVar("T")
 
 IMAGE_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp"}
+STREAM_STALL_SECONDS = 120
 
 _TERMINAL_RUN_STATUSES = frozenset(
     {"cancelled", "canceled", "completed", "failed", "error", "done", "success"}
@@ -67,6 +69,17 @@ async def _safe_cancel_run(run: Any, *, agent_id: str = "") -> None:
         )
     except Exception:
         logger.exception("cancel run failed (agent=%s)", agent_id or "?")
+
+
+class _StreamStallError(CursorAgentError):
+    """流式事件长时间无实质输出。不自动重试，避免大图把三次尝试都卡住。"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "模型长时间没有输出。若刚发送了图片，请改用较小的图后重试。",
+            code="stream_stall",
+            is_retryable=False,
+        )
 
 
 class _AgentSilentError(CursorAgentError):
@@ -93,11 +106,24 @@ class AgentManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._cancel_requested: dict[str, bool] = {}
         self._rebuilt_agents: set[str] = set()
+        self._start_lock = asyncio.Lock()
+        self._pending_runs: set[str] = set()
+
+    @property
+    def is_started(self) -> bool:
+        return self._client is not None
+
+    def is_agent_running(self, agent_id: str) -> bool:
+        return agent_id in self._runs or agent_id in self._pending_runs
 
     async def start(self) -> None:
-        prepare_bridge_env()
+        async with self._start_lock:
+            await self._start_unlocked()
+
+    async def _start_unlocked(self) -> None:
         if self._client is not None:
-            await self._stop_client()
+            return
+        prepare_bridge_env()
         self._client = await AsyncClient.launch_bridge(
             workspace=self.default_cwd,
             state_root=str(bridge_state_root()),
@@ -118,6 +144,7 @@ class AgentManager:
                     self._runs.pop(agent_id, None)
         self._runs.clear()
         self._cancel_requested.clear()
+        self._pending_runs.clear()
 
         for agent in list(self._sdk_agents.values()):
             try:
@@ -127,7 +154,8 @@ class AgentManager:
             except Exception:
                 logger.exception("failed to close agent")
         self._sdk_agents.clear()
-        await self._stop_client()
+        async with self._start_lock:
+            await self._stop_client()
 
     async def _stop_client(self) -> None:
         if self._client is not None:
@@ -153,8 +181,9 @@ class AgentManager:
         for record in self.agents.values():
             record.sdk_agent_id = None
         save_agents(self.agents)
-        await self._stop_client()
-        await self.start()
+        async with self._start_lock:
+            await self._stop_client()
+            await self._start_unlocked()
 
     @staticmethod
     def _is_recoverable_error(err: BaseException) -> bool:
@@ -169,6 +198,8 @@ class AgentManager:
                 "（多次重试后仍未收到模型输出。已自动重建 Agent 连接并回填本地对话历史，"
                 "但本轮仍未能恢复。请再发一次消息；若仍无回复，可新建 Agent 或检查 API Key / 网络。）"
             )
+        if isinstance(err, _StreamStallError):
+            return err.message or "模型长时间没有输出，请稍后重试。"
         detail = str(err)
         if isinstance(err, CursorAgentError):
             parts = [p for p in (err.code, err.message) if p]
@@ -217,7 +248,7 @@ class AgentManager:
             key=lambda a: a.updated_at,
             reverse=True,
         )
-        return [a.to_summary(running=a.id in self._runs) for a in items]
+        return [a.to_summary(running=self.is_agent_running(a.id)) for a in items]
 
     def get_agent(self, agent_id: str) -> AgentRecord | None:
         return self.agents.get(agent_id)
@@ -354,14 +385,7 @@ class AgentManager:
         return self._locks[agent_id]
 
     async def _ensure_client(self) -> AsyncClient:
-        if self._client is None:
-            await self.start()
-        else:
-            try:
-                await asyncio.wait_for(self._client.ping(), timeout=5.0)
-            except Exception as err:
-                logger.warning("bridge ping 失败，正在重启: %s", err)
-                await self._restart_bridge()
+        await self.start()
         assert self._client is not None
         return self._client
 
@@ -467,7 +491,13 @@ class AgentManager:
             mime, _ = mimetypes.guess_type(path.name)
             mime = mime or "application/octet-stream"
             if mime in IMAGE_MIME:
-                images.append(SDKImage.from_file(path, mime_type=mime))
+                prepared = prepare_image_for_sdk(path)
+                try:
+                    logger.info("附加图片 %s mime=%s size=%s", prepared, mime, prepared.stat().st_size)
+                    images.append(SDKImage.from_file(prepared, mime_type=mime))
+                finally:
+                    if prepared != path:
+                        prepared.unlink(missing_ok=True)
             else:
                 extra_lines.append(f"[引用文件: {path}]")
 
@@ -491,6 +521,13 @@ class AgentManager:
         for m in history:
             role = m.get("role")
             content = str(m.get("content") or "").strip()
+            if not content:
+                segments = m.get("segments") or []
+                content = " ".join(
+                    str(seg.get("text") or "")
+                    for seg in segments
+                    if isinstance(seg, dict) and seg.get("type") == "text"
+                ).strip()
             if not content:
                 continue
             label = "用户" if role == "user" else "助手" if role == "assistant" else None
@@ -557,6 +594,7 @@ class AgentManager:
 
         async with self._lock_for(agent_id):
             self._cancel_requested[agent_id] = False
+            self._pending_runs.add(agent_id)
             user_msg: dict[str, Any] = {
                 "role": "user",
                 "content": merge_user_display_content(display_content, display_text),
@@ -565,15 +603,31 @@ class AgentManager:
                 user_msg["attachments"] = attachments
             index = self._commit_message(record, user_msg)
             await self._emit_message_committed(emit, agent_id, record, user_msg, index)
+            await emit(
+                {
+                    "type": "run_started",
+                    "agentId": agent_id,
+                    "activity": "正在启动引擎…" if not self.is_started else "Agent 运行中…",
+                }
+            )
 
             user_message = self._build_user_message(
                 record, display_text or "请查看引用的文件或目录。", attachments
             )
+            if isinstance(user_message, UserMessage) and user_message.images:
+                await emit(
+                    {
+                        "type": "stream",
+                        "agentId": agent_id,
+                        "activity": "正在分析图片…",
+                    }
+                )
 
             try:
                 await self._ensure_client()
                 await self._execute_run_with_recovery(agent_id, record, user_message, emit)
             finally:
+                self._pending_runs.discard(agent_id)
                 self._cancel_requested.pop(agent_id, None)
                 self._rebuilt_agents.discard(agent_id)
 
@@ -728,12 +782,25 @@ class AgentManager:
             return
 
         segments: list[dict[str, Any]] = []
-
-        async for event in run.events():
+        last_progress = asyncio.get_running_loop().time()
+        event_iter = run.events().__aiter__()
+        while True:
             if self._cancel_requested.get(agent_id):
                 break
+            remaining = max(1.0, STREAM_STALL_SECONDS - (asyncio.get_running_loop().time() - last_progress))
+            try:
+                event = await asyncio.wait_for(event_iter.__anext__(), timeout=remaining)
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError as err:
+                logger.warning("Agent %s 流式输出停滞 %.0fs", agent_id, STREAM_STALL_SECONDS)
+                await self._abort_run(agent_id, run)
+                raise _StreamStallError() from err
+            useful = False
             for payload in serialize_run_event(event):
                 apply_payload_to_segments(segments, payload)
+                if payload.get("text") or payload.get("block"):
+                    useful = True
                 await emit(
                     {
                         "type": "stream",
@@ -741,6 +808,8 @@ class AgentManager:
                         **payload,
                     }
                 )
+            if useful:
+                last_progress = asyncio.get_running_loop().time()
 
         if self._cancel_requested.get(agent_id):
             await self._abort_run(agent_id, run)

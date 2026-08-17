@@ -17,16 +17,20 @@ from pydantic import BaseModel, Field
 from .agent_manager import AgentManager
 from .agent_workspace import save_upload
 from .config import AppConfig, load_config, save_config
-from .paths import load_dotenv_if_present, resource_root
-from .runtime import find_free_port, get_manager, manager_lifespan, start_manager, stop_manager
+from .paths import configure_logging, load_dotenv_if_present, log_file, resource_root
+from .runtime import (
+    boot_engine,
+    find_free_port,
+    get_manager,
+    get_or_create_manager,
+    manager_lifespan,
+    start_manager,
+    stop_manager,
+)
 from .ws_hub import register_client, set_event_loop, shell_visible, unregister_client
 
 load_dotenv_if_present()
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 PUBLIC = resource_root()
@@ -66,6 +70,8 @@ async def lifespan(_: FastAPI):
 
     async with manager_lifespan(APP_CONFIG):
         set_event_loop(asyncio.get_running_loop())
+        if APP_CONFIG.is_configured:
+            asyncio.create_task(boot_engine(APP_CONFIG))
         url = f"http://{HOST}:{PORT}"
         logger.info("尤雅 运行于 %s", url)
         if os.environ.get("OPEN_BROWSER", "1") == "1" and not os.environ.get(
@@ -105,7 +111,7 @@ async def status():
     manager = get_manager()
     return {
         "configured": APP_CONFIG.is_configured,
-        "ready": manager is not None,
+        "ready": manager is not None and manager.is_started,
         "url": f"http://{HOST}:{PORT}",
         "defaultCwd": APP_CONFIG.default_cwd or str(Path.home()),
         "defaultModel": APP_CONFIG.default_model,
@@ -157,7 +163,7 @@ async def upload_file(
 ):
     manager = await ensure_manager()
     if manager is None:
-        return {"ok": False, "detail": "请先完成设置"}
+        return {"ok": False, "detail": manager_unavailable_message()}
     record = manager.get_agent(agent_id)
     if record is None:
         return {"ok": False, "detail": "Agent 不存在"}
@@ -166,15 +172,29 @@ async def upload_file(
     return {"ok": True, **info}
 
 
-async def ensure_manager() -> AgentManager | None:
-    """已配置但尚未启动时懒加载 AgentManager（含 bridge）。"""
+def manager_unavailable_message() -> str:
+    if not APP_CONFIG.is_configured:
+        return "请先完成设置"
+    return (
+        "Agent 引擎未能启动，请检查 API Key 与网络。"
+        f"详细日志：{log_file()}"
+    )
+
+
+async def ensure_manager(*, start_bridge: bool = False) -> AgentManager | None:
+    """已配置时加载 AgentManager。start_bridge=True 时等待引擎就绪。"""
     if not APP_CONFIG.is_configured:
         return None
-    manager = get_manager()
-    if manager is not None:
+    try:
+        manager = await get_or_create_manager(APP_CONFIG)
+    except Exception:
+        logger.exception("创建 AgentManager 失败")
+        return None
+    if not start_bridge:
         return manager
     try:
-        return await start_manager(APP_CONFIG)
+        await manager.start()
+        return manager
     except Exception:
         logger.exception("启动 AgentManager 失败")
         return None
@@ -184,18 +204,41 @@ async def ensure_manager() -> AgentManager | None:
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     register_client(ws)
-    manager = await ensure_manager()
+    manager = get_manager()
     send_lock = asyncio.Lock()
 
     async def emit(payload: dict) -> None:
         async with send_lock:
             await ws.send_text(json.dumps(payload, ensure_ascii=False))
 
+    async def warmup_engine() -> None:
+        nonlocal manager
+        try:
+            manager = await ensure_manager(start_bridge=True)
+            if manager is None:
+                await emit(
+                    {
+                        "type": "engine_status",
+                        "state": "error",
+                        "message": manager_unavailable_message(),
+                    }
+                )
+                return
+            await emit({"type": "engine_status", "state": "ready"})
+        except Exception:
+            logger.debug("warmup 状态未能送达客户端", exc_info=True)
+
     async def run_send(agent_id: str, message: str, attachments: list | None, display_content: str | None) -> None:
         nonlocal manager
-        manager = await ensure_manager()
+        manager = await ensure_manager(start_bridge=True)
         if manager is None:
-            await emit({"type": "error", "message": "请先完成设置"})
+            await emit(
+                {
+                    "type": "error",
+                    "agentId": agent_id,
+                    "message": manager_unavailable_message(),
+                }
+            )
             return
         try:
             await manager.send_message(
@@ -203,25 +246,32 @@ async def websocket_endpoint(ws: WebSocket):
             )
         except Exception:
             logger.exception("send_message failed")
-            await emit({"type": "error", "message": "消息发送失败"})
+            await emit({"type": "error", "agentId": agent_id, "message": "消息发送失败"})
 
     async def run_discussion_send(discussion_id: str, message: str) -> None:
         nonlocal manager
-        manager = await ensure_manager()
+        manager = await ensure_manager(start_bridge=True)
         if manager is None:
-            await emit({"type": "error", "message": "请先完成设置"})
+            await emit({"type": "error", "message": manager_unavailable_message()})
             return
         try:
             await manager.discussions.send_message(discussion_id, message, emit)
         except Exception:
             logger.exception("discussion_send failed")
-            await emit({"type": "error", "message": "讨论消息发送失败"})
+            await emit(
+                {
+                    "type": "error",
+                    "discussionId": discussion_id,
+                    "scope": "discussion",
+                    "message": "讨论消息发送失败",
+                }
+            )
 
     async def run_summarize_discussion(discussion_id: str, regenerate: bool) -> None:
         nonlocal manager
-        manager = await ensure_manager()
+        manager = await ensure_manager(start_bridge=True)
         if manager is None:
-            await emit({"type": "error", "message": "请先完成设置"})
+            await emit({"type": "error", "message": manager_unavailable_message()})
             return
         try:
             await manager.discussions.summarize_discussion(
@@ -235,9 +285,9 @@ async def websocket_endpoint(ws: WebSocket):
         agent_id: str, discussion_ids: list, regenerate: bool
     ) -> None:
         nonlocal manager
-        manager = await ensure_manager()
+        manager = await ensure_manager(start_bridge=True)
         if manager is None:
-            await emit({"type": "error", "message": "请先完成设置"})
+            await emit({"type": "error", "message": manager_unavailable_message()})
             return
         try:
             await manager.discussions.summarize_discussions(
@@ -249,9 +299,9 @@ async def websocket_endpoint(ws: WebSocket):
 
     async def run_resummarize_combined(combined_id: str, regenerate_individuals: bool) -> None:
         nonlocal manager
-        manager = await ensure_manager()
+        manager = await ensure_manager(start_bridge=True)
         if manager is None:
-            await emit({"type": "error", "message": "请先完成设置"})
+            await emit({"type": "error", "message": manager_unavailable_message()})
             return
         try:
             await manager.discussions.resummarize_combined(
@@ -261,6 +311,15 @@ async def websocket_endpoint(ws: WebSocket):
             logger.exception("resummarize_combined failed")
             await emit({"type": "error", "message": "重新合并总结失败"})
 
+    async def run_list_models() -> None:
+        nonlocal manager
+        manager = await ensure_manager(start_bridge=True)
+        if manager is None:
+            await emit({"type": "models", "models": []})
+            return
+        models = await manager.list_models()
+        await emit({"type": "models", "models": models})
+
     await emit(
         {
             "type": "hello",
@@ -269,8 +328,11 @@ async def websocket_endpoint(ws: WebSocket):
             "defaultModel": APP_CONFIG.default_model,
             "url": f"http://{HOST}:{PORT}",
             "shellVisible": shell_visible(),
+            "engineReady": bool(get_manager() and get_manager().is_started),
         }
     )
+    if APP_CONFIG.is_configured:
+        asyncio.create_task(warmup_engine())
 
     try:
         while True:
@@ -288,21 +350,21 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "get_agent":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 record = manager.get_agent(data["agentId"])
                 if record:
                     await emit(
                         {
                             "type": "agent",
-                            "agent": record.to_detail(running=record.id in manager._runs),
+                            "agent": record.to_detail(running=manager.is_agent_running(record.id)),
                         }
                     )
 
             elif msg_type == "create_agent":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 record = manager.create_agent(
                     name=data.get("name"),
@@ -319,14 +381,14 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "update_agent":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 try:
                     record = manager.update_agent(data["agentId"], data)
                     await emit(
                         {
                             "type": "agent_updated",
-                            "agent": record.to_detail(running=record.id in manager._runs),
+                            "agent": record.to_detail(running=manager.is_agent_running(record.id)),
                         }
                     )
                 except ValueError as err:
@@ -342,14 +404,17 @@ async def websocket_endpoint(ws: WebSocket):
                     )
 
             elif msg_type == "delete_agent":
-                if manager:
-                    manager.delete_agent(data["agentId"])
+                manager = await ensure_manager()
+                if manager is None:
+                    await emit({"type": "error", "message": manager_unavailable_message()})
+                    continue
+                manager.delete_agent(data["agentId"])
                 await emit({"type": "agent_deleted", "agentId": data["agentId"]})
 
             elif msg_type == "reset_agent":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 try:
                     record = await manager.reset_agent(data["agentId"])
@@ -380,68 +445,98 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "read_agent_files":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 overrides = {
                     k: data[k]
                     for k in ("rulesDir", "skillsDir", "memoryDir")
                     if k in data
                 }
-                files = manager.read_agent_files(data["agentId"], overrides or None)
-                await emit({"type": "agent_files", "agentId": data["agentId"], **files})
+                try:
+                    files = manager.read_agent_files(data["agentId"], overrides or None)
+                    await emit({"type": "agent_files", "agentId": data["agentId"], **files})
+                except (KeyError, OSError, ValueError) as err:
+                    await emit(
+                        {
+                            "type": "error",
+                            "agentId": data.get("agentId"),
+                            "message": f"读取 Agent 配置失败: {err}",
+                        }
+                    )
 
             elif msg_type == "read_agent_file":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
-                content = manager.read_single_agent_file(
-                    data["agentId"],
-                    data.get("source", "rules"),
-                    data["path"],
-                )
-                await emit(
-                    {
-                        "type": "agent_file",
-                        "agentId": data["agentId"],
-                        "source": data.get("source", "rules"),
-                        "path": data["path"],
-                        "content": content,
-                    }
-                )
+                try:
+                    content = manager.read_single_agent_file(
+                        data["agentId"],
+                        data.get("source", "rules"),
+                        data["path"],
+                    )
+                    await emit(
+                        {
+                            "type": "agent_file",
+                            "agentId": data["agentId"],
+                            "source": data.get("source", "rules"),
+                            "path": data["path"],
+                            "content": content,
+                        }
+                    )
+                except (KeyError, FileNotFoundError, ValueError, OSError) as err:
+                    await emit(
+                        {
+                            "type": "error",
+                            "agentId": data.get("agentId"),
+                            "message": f"读取配置文件失败: {err}",
+                        }
+                    )
 
             elif msg_type == "write_agent_file":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
-                manager.write_agent_file(
-                    data["agentId"],
-                    data.get("source", "rules"),
-                    data["path"],
-                    data["content"],
-                )
-                await emit(
-                    {
-                        "type": "agent_file_saved",
-                        "agentId": data["agentId"],
-                        "source": data.get("source", "rules"),
-                        "path": data["path"],
-                    }
-                )
+                try:
+                    manager.write_agent_file(
+                        data["agentId"],
+                        data.get("source", "rules"),
+                        data["path"],
+                        data.get("content", ""),
+                    )
+                    files = manager.read_agent_files(data["agentId"])
+                    await emit(
+                        {
+                            "type": "agent_file_saved",
+                            "agentId": data["agentId"],
+                            "source": data.get("source", "rules"),
+                            "path": data["path"],
+                            **files,
+                        }
+                    )
+                except (KeyError, ValueError, OSError) as err:
+                    await emit(
+                        {
+                            "type": "error",
+                            "agentId": data.get("agentId"),
+                            "message": f"保存配置文件失败: {err}",
+                        }
+                    )
 
             elif msg_type == "list_models":
-                manager = await ensure_manager()
-                if manager is None:
-                    await emit({"type": "models", "models": []})
-                    continue
-                models = await manager.list_models()
-                await emit({"type": "models", "models": models})
+                asyncio.create_task(run_list_models())
 
             elif msg_type == "send":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit(
+                        {
+                            "type": "error",
+                            "agentId": data.get("agentId"),
+                            "message": manager_unavailable_message(),
+                        }
+                    )
                     continue
                 asyncio.create_task(
                     run_send(
@@ -453,6 +548,7 @@ async def websocket_endpoint(ws: WebSocket):
                 )
 
             elif msg_type == "cancel":
+                manager = await ensure_manager()
                 if manager:
                     await manager.cancel(data["agentId"], emit)
 
@@ -473,7 +569,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "create_discussion":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 discussion = manager.discussions.create(data["agentId"], data.get("anchor", {}))
                 await emit(
@@ -486,7 +582,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "discussion_send":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 asyncio.create_task(
                     run_discussion_send(data["discussionId"], data.get("message", ""))
@@ -495,7 +591,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "delete_discussion":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 deleted = manager.discussions.delete(data["discussionId"])
                 if deleted is None:
@@ -515,10 +611,28 @@ async def websocket_endpoint(ws: WebSocket):
                         }
                     )
 
+            elif msg_type == "set_discussion_collapsed":
+                manager = await ensure_manager()
+                if manager is None:
+                    await emit({"type": "error", "message": manager_unavailable_message()})
+                    continue
+                updated = manager.discussions.set_collapsed(
+                    data["discussionId"], bool(data.get("collapsed"))
+                )
+                if updated is None:
+                    await emit(
+                        {
+                            "type": "error",
+                            "discussionId": data.get("discussionId"),
+                            "scope": "discussion",
+                            "message": "讨论不存在",
+                        }
+                    )
+
             elif msg_type == "summarize_discussion":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 asyncio.create_task(
                     run_summarize_discussion(
@@ -530,7 +644,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "update_discussion_summary":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 updated = manager.discussions.update_discussion_summary(
                     data["discussionId"], data.get("summary", "")
@@ -554,7 +668,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "summarize_discussions":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 asyncio.create_task(
                     run_summarize_discussions(
@@ -581,7 +695,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "update_combined_summary":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 updated = manager.discussions.update_combined_summary(
                     data["combinedSummaryId"], data.get("summary", "")
@@ -605,7 +719,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "resummarize_combined":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 asyncio.create_task(
                     run_resummarize_combined(
@@ -617,7 +731,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "delete_combined_summary":
                 manager = await ensure_manager()
                 if manager is None:
-                    await emit({"type": "error", "message": "请先完成设置"})
+                    await emit({"type": "error", "message": manager_unavailable_message()})
                     continue
                 deleted = manager.discussions.delete_combined_summary(
                     data["combinedSummaryId"]

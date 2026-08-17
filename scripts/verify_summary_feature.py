@@ -162,9 +162,13 @@ def verify_websocket_handlers() -> None:
         "delete_combined_summary",
         "run_summarize_discussion",
         "run_summarize_discussions",
+        "set_discussion_collapsed",
+        "manager_unavailable_message",
     ]
     for key in required:
         check(f"app.py 含 {key}", key in app_py)
+    dm_py = (ROOT / "server" / "discussion_manager.py").read_text(encoding="utf-8")
+    check("discussion_manager 含 discussion_cancelled", "discussion_cancelled" in dm_py)
 
 
 def verify_frontend() -> None:
@@ -174,7 +178,11 @@ def verify_frontend() -> None:
     style_css = (ROOT / "public" / "style.css").read_text(encoding="utf-8")
 
     checks = [
-        ("discussion_summary_started", app_js),
+        ("discussion_cancelled", app_js),
+        ("set_discussion_collapsed", app_js),
+        ("ensureConnected", app_js),
+        ("config-file-editor", index_html),
+        ("rules-tree", index_html),
         ("combined_summary_stream", app_js),
         ("injectSummaryToComposer", app_js),
         ("updateDiscussionSummaryDom", app_js),
@@ -185,6 +193,10 @@ def verify_frontend() -> None:
         ("combined-summaries", index_html),
         (".discussion-summary", style_css),
         (".combined-summary-card", style_css),
+        ('<select id="agent-model-input"', index_html),
+        ('<select id="system-default-model"', index_html),
+        ('<select id="setup-model"', index_html),
+        ("fillModelSelect", app_js),
     ]
     for key, src in checks:
         check(key, key in src)

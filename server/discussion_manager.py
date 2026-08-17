@@ -63,8 +63,24 @@ class DiscussionManager:
     def get(self, discussion_id: str) -> Discussion | None:
         return self._discussions.get(discussion_id)
 
+    def set_collapsed(self, discussion_id: str, collapsed: bool) -> Discussion | None:
+        discussion = self._discussions.get(discussion_id)
+        if discussion is None:
+            return None
+        if not collapsed:
+            for other in self._discussions.values():
+                if other.agent_id == discussion.agent_id and other.id != discussion_id:
+                    other.collapsed = True
+        discussion.collapsed = collapsed
+        save_discussions(self._discussions)
+        return discussion
+
     def create(self, agent_id: str, anchor: dict[str, Any]) -> Discussion:
+        for existing in self._discussions.values():
+            if existing.agent_id == agent_id:
+                existing.collapsed = True
         record = new_discussion(agent_id, anchor)
+        record.collapsed = False
         self._discussions[record.id] = record
         save_discussions(self._discussions)
         return record
@@ -93,13 +109,14 @@ class DiscussionManager:
         if discussion is None:
             return None
         self._cancel_requested[discussion_id] = True
-        run = self._runs.pop(discussion_id, None)
+        run = self._runs.get(discussion_id)
         if run is not None and run.supports("cancel"):
             try:
                 asyncio.create_task(run.cancel())
             except Exception:
-                pass
-        self._cancel_requested.pop(discussion_id, None)
+                logger.debug("cancel discussion run failed", exc_info=True)
+        if discussion_id not in self._runs:
+            self._cancel_requested.pop(discussion_id, None)
         sdk = self._sdk_agents.pop(discussion_id, None)
         if sdk is not None:
             asyncio.create_task(sdk.close())
@@ -169,12 +186,26 @@ class DiscussionManager:
     ) -> None:
         discussion = self._discussions.get(discussion_id)
         if discussion is None:
-            await emit({"type": "error", "message": "讨论不存在"})
+            await emit(
+                {
+                    "type": "error",
+                    "discussionId": discussion_id,
+                    "scope": "discussion",
+                    "message": "讨论不存在",
+                }
+            )
             return
 
         agent_record: AgentRecord | None = self._manager.agents.get(discussion.agent_id)
         if agent_record is None:
-            await emit({"type": "error", "message": "Agent 不存在"})
+            await emit(
+                {
+                    "type": "error",
+                    "discussionId": discussion_id,
+                    "scope": "discussion",
+                    "message": "Agent 不存在",
+                }
+            )
             return
 
         async with self._lock_for(discussion_id):
@@ -222,19 +253,27 @@ class DiscussionManager:
                             }
                         )
 
-                if self._cancel_requested.get(discussion_id):
+                cancelled = bool(self._cancel_requested.get(discussion_id)) or (
+                    discussion_id not in self._discussions
+                )
+                if cancelled:
                     run = self._runs.pop(discussion_id, None)
                     if run is not None and run.supports("cancel"):
                         try:
                             await run.cancel()
                         except Exception:
-                            pass
+                            logger.debug("cancel discussion run failed", exc_info=True)
                     await emit(
                         {
                             "type": "discussion_cancelled",
                             "discussionId": discussion_id,
+                            "agentId": discussion.agent_id,
                         }
                     )
+                    return
+
+                if discussion_id not in self._discussions:
+                    self._runs.pop(discussion_id, None)
                     return
 
                 await run.wait()
@@ -274,6 +313,7 @@ class DiscussionManager:
                     {
                         "type": "error",
                         "discussionId": discussion_id,
+                        "scope": "discussion",
                         "message": str(err),
                     }
                 )
@@ -336,7 +376,14 @@ class DiscussionManager:
             return discussion.summary
 
         if discussion_id in self._summarizing:
-            await emit({"type": "error", "discussionId": discussion_id, "message": "总结进行中"})
+            await emit(
+                {
+                    "type": "error",
+                    "discussionId": discussion_id,
+                    "scope": "summary",
+                    "message": "总结进行中",
+                }
+            )
             return None
 
         async with self._summary_lock_for(discussion_id):
@@ -374,6 +421,7 @@ class DiscussionManager:
                     {
                         "type": "error",
                         "discussionId": discussion_id,
+                        "scope": "summary",
                         "message": str(err),
                     }
                 )
@@ -501,7 +549,14 @@ class DiscussionManager:
                 return combined
             except Exception as err:
                 logger.exception("combined summarize failed")
-                await emit({"type": "error", "message": str(err)})
+                await emit(
+                    {
+                        "type": "error",
+                        "combinedSummaryId": combined.id,
+                        "scope": "combined",
+                        "message": str(err),
+                    }
+                )
                 return None
             finally:
                 self._combined_summarizing.discard(combined.id)
@@ -624,7 +679,14 @@ class DiscussionManager:
                 return combined
             except Exception as err:
                 logger.exception("resummarize combined failed")
-                await emit({"type": "error", "message": str(err)})
+                await emit(
+                    {
+                        "type": "error",
+                        "combinedSummaryId": combined_id,
+                        "scope": "combined",
+                        "message": str(err),
+                    }
+                )
                 return None
             finally:
                 self._combined_summarizing.discard(combined_id)

@@ -150,6 +150,31 @@ def run_checks() -> int:
         failures.append("sendMessage 仍乐观设置 busy")
     else:
         print("    sendMessage 不提前禁用发送键 ✓")
+    if "正在启动引擎" not in send_block:
+        failures.append("sendMessage 首次发送未立即进入运行态")
+    else:
+        print("    sendMessage 立即显示启动中 ✓")
+    if "onComposerAction" not in app_js or 'btn.textContent = "停止"' not in app_js:
+        failures.append("发送键未在运行时切换为停止")
+    else:
+        print("    发送后按钮变为停止 ✓")
+    if "run-status-bar" in app_js or "run-status-bar" in (ROOT / "public" / "index.html").read_text(encoding="utf-8"):
+        failures.append("输入框旁运行状态栏仍在")
+    else:
+        print("    已去掉贴着输入框的状态栏 ✓")
+    app_py = (ROOT / "server" / "app.py").read_text(encoding="utf-8")
+    if "boot_engine" not in app_py:
+        failures.append("应用启动时未预热引擎")
+    else:
+        print("    打开应用即后台启动 bridge ✓")
+    if "trace-card" not in app_js:
+        failures.append("对话未按 Cursor 方式折叠步骤")
+    else:
+        print("    步骤折叠 ✓")
+    if "asyncio.create_task(run_list_models())" not in app_py:
+        failures.append("list_models 仍阻塞 WebSocket 循环")
+    else:
+        print("    list_models 不阻塞发送 ✓")
     if "syncRuntimeFromServer" in app_js and "applyShellState" in app_js:
         print("    服务端 busy 同步 + shell 事件 ✓")
     else:

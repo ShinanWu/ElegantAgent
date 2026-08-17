@@ -40,6 +40,10 @@ def check_frontend_helpers() -> list[str]:
         'case "shell"',
         "shellVisible",
         'applyAgentEvent(aid, "run_started"',
+        "ensureConnected",
+        "reconnectDelay",
+        "engine_status",
+        "currentWaitText",
     ]
     for name in required:
         if name not in app_js:
@@ -71,13 +75,30 @@ def check_frontend_helpers() -> list[str]:
     return failures
 
 
+IGNORE_WS_TYPES = {"engine_status"}
+
+
+async def recv_typed(ws, expected: str, timeout: float = 8.0) -> dict:
+    import asyncio
+
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            raise TimeoutError(f"等待 {expected} 超时")
+        msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+        if msg.get("type") in IGNORE_WS_TYPES:
+            continue
+        return msg
+
+
 async def ws_conversation_roundtrip(host: str, port: int) -> list[str]:
     failures: list[str] = []
     import websockets
 
     uri = f"ws://{host}:{port}/ws"
     async with websockets.connect(uri, open_timeout=5) as ws:
-        hello = json.loads(await ws.recv())
+        hello = await recv_typed(ws, "hello")
         if hello.get("type") != "hello":
             failures.append(f"期望 hello，收到 {hello.get('type')}")
             return failures
@@ -88,10 +109,10 @@ async def ws_conversation_roundtrip(host: str, port: int) -> list[str]:
             failures.append(f"hello.shellVisible 应为 true，实际 {hello.get('shellVisible')}")
 
         await ws.send(json.dumps({"type": "list_agents"}))
-        agents_msg = json.loads(await ws.recv())
+        agents_msg = await recv_typed(ws, "agents")
         agents = agents_msg.get("agents") or []
-        if not agents:
-            failures.append("agents 列表为空")
+        if agents_msg.get("type") != "agents" or not agents:
+            failures.append(f"agents 列表为空（收到 {agents_msg.get('type')}）")
             return failures
 
         target = max(agents, key=lambda a: a.get("messageCount") or 0)
@@ -99,7 +120,7 @@ async def ws_conversation_roundtrip(host: str, port: int) -> list[str]:
         expected = target.get("messageCount") or 0
 
         await ws.send(json.dumps({"type": "get_agent", "agentId": agent_id}))
-        detail_msg = json.loads(await ws.recv())
+        detail_msg = await recv_typed(ws, "agent")
         if detail_msg.get("type") != "agent":
             failures.append(f"get_agent 返回 {detail_msg.get('type')} 而非 agent")
             return failures
@@ -117,12 +138,12 @@ async def ws_conversation_roundtrip(host: str, port: int) -> list[str]:
         from server.ws_hub import set_shell_visible
 
         await set_shell_visible(False)
-        shell_msg = json.loads(await ws.recv())
+        shell_msg = await recv_typed(ws, "shell")
         if shell_msg.get("type") != "shell" or shell_msg.get("visible") is not False:
             failures.append(f"shell hidden 事件异常: {shell_msg}")
 
         await set_shell_visible(True)
-        shell_msg = json.loads(await ws.recv())
+        shell_msg = await recv_typed(ws, "shell")
         if shell_msg.get("type") != "shell" or shell_msg.get("visible") is not True:
             failures.append(f"shell visible 事件异常: {shell_msg}")
         else:

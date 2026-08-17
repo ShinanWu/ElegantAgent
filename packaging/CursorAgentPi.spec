@@ -108,8 +108,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "尤雅",
         "CFBundleDisplayName": "尤雅",
-        "CFBundleVersion": "1.0.0",
-        "CFBundleShortVersionString": "1.0.0",
+        "CFBundleVersion": "1.0.1",
+        "CFBundleShortVersionString": "1.0.1",
         # PyInstaller 默认会写成 "AppIcon.icns"（带扩展名），导致系统找不到图标
         "CFBundleIconFile": "AppIcon",
         "CFBundleIconName": "AppIcon",

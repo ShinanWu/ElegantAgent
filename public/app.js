@@ -19,6 +19,8 @@ const NO_INSTRUCTION_LEGACY = new Set([
 const state = {
   ws: null,
   connected: false,
+  reconnectDelay: 400,
+  reconnectTimer: null,
   agents: [],
   activeAgentId: null,
   activeAgent: null,
@@ -40,11 +42,17 @@ const state = {
   combinedSummaryRuntimes: {},
   summarySectionOpen: new Set(),
   savingAgent: false,
+  creatingAgent: false,
+  engineState: "connecting",
+  engineMessage: "正在连接…",
+  waitHint: "",
   openDrawerAfterSelect: false,
   linkViewerUrl: "",
   contextMenuFromSelection: false,
   suppressSelectionContextMenuUntil: 0,
   ignoreContextMenuDismissUntil: 0,
+  configFiles: { soul: "", rulesTree: [], skillsTree: [], memoryTree: [] },
+  configEditor: { source: "", path: "", content: "", dirty: false },
 };
 
 let mainComposer = null;
@@ -88,7 +96,15 @@ function isActiveBusy() {
 function send(payload) {
   if (state.ws?.readyState === WebSocket.OPEN) {
     state.ws.send(JSON.stringify(payload));
+    return true;
   }
+  return false;
+}
+
+function ensureConnected(message) {
+  if (state.ws?.readyState === WebSocket.OPEN) return true;
+  showToast(message || "尚未连接到 Agent 服务，请稍后再试", "error");
+  return false;
 }
 
 function applyShellState(visible) {
@@ -120,11 +136,19 @@ function connect() {
   if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
     return;
   }
+  if (state.reconnectTimer) {
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+  }
+  state.engineState = "connecting";
+  state.engineMessage = "";
+  updateChrome();
   const proto = location.protocol === "https:" ? "wss" : "ws";
   state.ws = new WebSocket(`${proto}://${location.host}/ws`);
 
   state.ws.onopen = () => {
     state.connected = true;
+    state.reconnectDelay = 400;
     updateChrome();
     if (!state.needsSetup) {
       send({ type: "list_agents" });
@@ -139,12 +163,16 @@ function connect() {
   state.ws.onclose = () => {
     state.connected = false;
     state.ws = null;
+    state.engineState = "connecting";
+    state.engineMessage = "";
     for (const a of state.agents) {
       const fx = AgentFSM.dispatch(a.id, "ws_disconnected");
       if (isActive(a.id) && fx.streamChanged) AgentFSM.finalizeStreamView(fx.agent);
     }
     updateChrome();
-    connect();
+    const delay = state.reconnectDelay;
+    state.reconnectDelay = Math.min(Math.round(delay * 1.7), 8000);
+    state.reconnectTimer = setTimeout(connect, delay);
   };
 
   state.ws.onmessage = (ev) => handleMessage(JSON.parse(ev.data));
@@ -170,16 +198,33 @@ function handleMessage(msg) {
       state.needsSetup = !!msg.needsSetup;
       state.shellVisible = msg.shellVisible !== false;
       $("setup-cwd").value = state.defaultCwd;
-      $("setup-model").value = state.defaultModel;
+      fillModelSelect($("setup-model"), state.defaultModel);
       if (state.needsSetup) {
         showSetup(true);
         return;
       }
       hideSetup();
+      if (msg.engineReady) {
+        state.engineState = "ready";
+        state.engineMessage = "";
+      } else if (state.engineState !== "ready") {
+        state.engineState = "starting";
+        state.engineMessage = "正在启动引擎…";
+      }
+      updateChrome();
       break;
 
     case "shell":
       applyShellState(!!msg.visible);
+      break;
+
+    case "engine_status":
+      state.engineState = msg.state || state.engineState;
+      state.engineMessage = msg.message || "";
+      if (msg.state === "error") {
+        showToast(msg.message || "引擎启动失败", "error");
+      }
+      updateChrome();
       break;
 
     case "agents":
@@ -190,6 +235,9 @@ function handleMessage(msg) {
       break;
 
     case "agent_created":
+      state.creatingAgent = false;
+      $("btn-new-agent").disabled = false;
+      if (state.waitHint === "正在创建 Agent…") state.waitHint = "";
       state.agents.unshift({
         id: msg.agent.id,
         name: msg.agent.name,
@@ -249,6 +297,7 @@ function handleMessage(msg) {
       renderAgents();
       renderDiscussions();
       refreshAllDiscussionHighlights();
+      if (state.waitHint === "正在删除 Agent…") state.waitHint = "";
       updateChrome();
       break;
 
@@ -280,6 +329,8 @@ function handleMessage(msg) {
           requestAnimationFrame(() => mainComposer?.focus());
           showToast("Agent 已重置");
         }
+        if (state.waitHint === "正在重置 Agent…") state.waitHint = "";
+        updateChrome();
         renderAgents();
       }
       break;
@@ -288,11 +339,28 @@ function handleMessage(msg) {
       if (isActive(msg.agentId) && msg.soul != null) {
         $("soul-editor").value = msg.soul;
       }
+      if (isActive(msg.agentId)) applyAgentConfigFiles(msg);
+      break;
+
+    case "agent_file":
+      if (isActive(msg.agentId)) openConfigFileEditor(msg.source, msg.path, msg.content || "");
+      break;
+
+    case "agent_file_saved":
+      if (isActive(msg.agentId)) {
+        applyAgentConfigFiles(msg);
+        if (state.configEditor.source === msg.source && state.configEditor.path === msg.path) {
+          state.configEditor.dirty = false;
+          state.configEditor.content = $("config-file-body")?.value || state.configEditor.content;
+        }
+        showToast("配置文件已保存");
+      }
       break;
 
     case "models":
-      state.models = msg.models;
+      state.models = msg.models || [];
       renderModels();
+      syncModelSelects();
       break;
 
     case "message_committed":
@@ -378,6 +446,24 @@ function handleMessage(msg) {
         if (msg.message) appendDiscussionMessage(msg.discussionId, msg.message);
         if (!finalizeDiscussionPanel(msg.discussionId, msg.message)) {
           renderDiscussions();
+        }
+      }
+      break;
+
+    case "discussion_cancelled":
+      {
+        const runtime = state.discussionRuntimes[msg.discussionId];
+        if (runtime) {
+          runtime.busy = false;
+          runtime.streamingText = "";
+          runtime.segments = [];
+          runtime.thinkingText = "";
+          runtime.toolBlocks = [];
+        }
+        const panel = getDiscussionPanel(msg.discussionId);
+        if (panel) {
+          panel.querySelector(".discussion-msg.streaming")?.remove();
+          updateDiscussionTitleBusy(msg.discussionId, false);
         }
       }
       break;
@@ -512,10 +598,30 @@ function handleMessage(msg) {
 
     case "error":
       if (msg.discussionId) {
-        setSummaryRuntime(msg.discussionId, { busy: false, streamingText: "" });
-        updateDiscussionSummaryDom(msg.discussionId, { busy: false });
-        updateDiscussionSummarizeBtn(msg.discussionId);
-        showToast(msg.message || "意图生成失败", "error");
+        const discussionBusy = !!state.discussionRuntimes[msg.discussionId]?.busy;
+        const summaryBusy = !!state.summaryRuntimes[msg.discussionId]?.busy;
+        const scope = msg.scope || (discussionBusy ? "discussion" : summaryBusy ? "summary" : "discussion");
+        if (scope === "discussion" || discussionBusy) {
+          const drt = state.discussionRuntimes[msg.discussionId];
+          if (drt) {
+            drt.busy = false;
+            drt.streamingText = "";
+            drt.segments = [];
+            drt.thinkingText = "";
+            drt.toolBlocks = [];
+          }
+          const panel = getDiscussionPanel(msg.discussionId);
+          if (panel) {
+            panel.querySelector(".discussion-msg.streaming")?.remove();
+            updateDiscussionTitleBusy(msg.discussionId, false);
+          }
+          showToast(msg.message || "讨论消息发送失败", "error");
+        } else {
+          setSummaryRuntime(msg.discussionId, { busy: false, streamingText: "" });
+          updateDiscussionSummaryDom(msg.discussionId, { busy: false });
+          updateDiscussionSummarizeBtn(msg.discussionId);
+          showToast(msg.message || "意图生成失败", "error");
+        }
       } else if (msg.combinedSummaryId) {
         setCombinedSummaryRuntime(msg.combinedSummaryId, {
           busy: false,
@@ -525,6 +631,11 @@ function handleMessage(msg) {
         updateCombinedSummaryDom(msg.combinedSummaryId, { busy: false });
         showToast(msg.message || "合并意图生成失败", "error");
       }
+      if (state.creatingAgent) {
+        state.creatingAgent = false;
+        $("btn-new-agent").disabled = false;
+      }
+      if (state.waitHint) state.waitHint = "";
       if (state.savingAgent) {
         state.savingAgent = false;
         resetSaveAgentButton();
@@ -536,7 +647,7 @@ function handleMessage(msg) {
           showError(msg.message);
           if (fx.needsResync) fetchConversation(msg.agentId);
         }
-      } else {
+      } else if (!msg.discussionId && !msg.combinedSummaryId) {
         showError(msg.message);
         if (state.savingAgent || $("agent-drawer").classList.contains("open")) {
           showToast(msg.message, "error");
@@ -559,11 +670,15 @@ function applyAgentEvent(agentId, event, payload) {
 
   if (fx.committed && isActive(agentId)) {
     const message = fx.committed;
-    if (message.role === "assistant") AgentFSM.removeStreamViewBeforeCommit(fx.agent);
     state.activeAgent = { ...(state.activeAgent || {}), id: agentId, messages: fx.agent.messages };
-    appendMessageDom(message, fx.agent.messages.length - 1);
-    if (message.role === "user") state.autoScroll = true;
-    scrollToBottom(message.role === "user" || state.autoScroll);
+    if (message.role === "assistant" && adoptStreamingAsCommitted(fx.agent, message, fx.agent.messages.length - 1)) {
+      followOutput();
+    } else {
+      if (message.role === "assistant") AgentFSM.removeStreamViewBeforeCommit(fx.agent);
+      appendMessageDom(message, fx.agent.messages.length - 1);
+      if (message.role === "user") state.autoScroll = true;
+      scrollToBottom(message.role === "user" || state.autoScroll);
+    }
   }
 
   if (isActive(agentId)) {
@@ -571,19 +686,21 @@ function applyAgentEvent(agentId, event, payload) {
       AgentFSM.finalizeStreamView(fx.agent);
     } else if (fx.agent.phase === AgentFSM.Phase.RUNNING && (fx.streamChanged || fx.phaseChanged)) {
       renderAgentRunUI(agentId);
-      if (fx.agent.stream.activityText) $("run-status-text").textContent = fx.agent.stream.activityText;
     }
   }
 
-  updateChrome();
-  renderAgents();
+  const streamTick = event === "stream" && !fx.phaseChanged && !fx.committed;
+  if (!streamTick) {
+    updateChrome();
+    renderAgents();
+  }
   return fx;
 }
 
 function renderAgentRunUI(agentId) {
   const agent = AgentFSM.get(agentId);
   if (!agent || agent.phase !== AgentFSM.Phase.RUNNING) return;
-  startStreamingBubble(agent);
+  if (!startStreamingBubble(agent)) return;
   renderActiveStreaming(agent);
 }
 
@@ -598,12 +715,22 @@ function restoreLastAgent() {
 }
 
 function createAgent() {
-  send({
+  if (!ensureConnected("无法创建 Agent：尚未连接")) return;
+  if (state.creatingAgent) return;
+  state.creatingAgent = true;
+  $("btn-new-agent").disabled = true;
+  setWaitHint("正在创建 Agent…");
+  if (!send({
     type: "create_agent",
     name: "新 Agent",
     cwd: state.defaultCwd,
     model: state.defaultModel,
-  });
+  })) {
+    state.creatingAgent = false;
+    $("btn-new-agent").disabled = false;
+    setWaitHint("");
+    showToast("创建失败：连接已断开", "error");
+  }
 }
 
 function selectAgent(id, agentData) {
@@ -674,7 +801,7 @@ function loadConversation(agent) {
 function populateAgentDrawer(agent) {
   $("agent-name-input").value = agent.name || "";
   $("agent-cwd-input").value = agent.cwd || "";
-  $("agent-model-input").value = agent.model || "";
+  fillModelSelect($("agent-model-input"), agent.model || state.defaultModel);
   $("rules-dir-input").value = agent.rulesDir || "";
   $("skills-dir-input").value = agent.skillsDir || "";
   $("memory-dir-input").value = agent.memoryDir || "";
@@ -746,6 +873,109 @@ function loadAgentSoul() {
   send({ type: "read_agent_files", agentId: state.activeAgentId });
 }
 
+function applyAgentConfigFiles(msg) {
+  if (msg.soul != null) state.configFiles.soul = msg.soul;
+  if (msg.rulesTree) state.configFiles.rulesTree = msg.rulesTree;
+  if (msg.skillsTree) state.configFiles.skillsTree = msg.skillsTree;
+  if (msg.memoryTree) state.configFiles.memoryTree = msg.memoryTree;
+  renderConfigFileTree("rules", state.configFiles.rulesTree);
+  renderConfigFileTree("skills", state.configFiles.skillsTree);
+  renderConfigFileTree("memory", state.configFiles.memoryTree);
+  syncConfigEditorLabel();
+}
+
+function flattenConfigTree(nodes, acc = []) {
+  for (const node of nodes || []) {
+    if (node.type === "file") acc.push(node.path);
+    if (node.children?.length) flattenConfigTree(node.children, acc);
+  }
+  return acc;
+}
+
+function renderConfigFileTree(source, nodes) {
+  const el = $(`${source}-tree`);
+  if (!el) return;
+  const files = flattenConfigTree(nodes);
+  el.innerHTML = "";
+  if (!files.length) {
+    el.innerHTML = '<p class="config-file-empty">暂无文件</p>';
+    return;
+  }
+  for (const path of files) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "config-file-item";
+    if (state.configEditor.source === source && state.configEditor.path === path) {
+      btn.classList.add("active");
+    }
+    btn.textContent = path;
+    btn.title = path;
+    btn.onclick = () => requestConfigFile(source, path);
+    el.appendChild(btn);
+  }
+}
+
+function requestConfigFile(source, path) {
+  if (!state.activeAgentId || !path) return;
+  if (state.configEditor.dirty && !confirm("当前文件有未保存修改，确定切换？")) return;
+  send({ type: "read_agent_file", agentId: state.activeAgentId, source, path });
+}
+
+function openConfigFileEditor(source, path, content) {
+  state.configEditor = { source, path, content, dirty: false };
+  const wrap = $("config-file-editor");
+  const body = $("config-file-body");
+  if (wrap) wrap.classList.remove("hidden");
+  if (body) body.value = content;
+  syncConfigEditorLabel();
+  renderConfigFileTree("rules", state.configFiles.rulesTree);
+  renderConfigFileTree("skills", state.configFiles.skillsTree);
+  renderConfigFileTree("memory", state.configFiles.memoryTree);
+}
+
+function syncConfigEditorLabel() {
+  const label = $("config-file-label");
+  if (!label) return;
+  const { source, path, dirty } = state.configEditor;
+  label.textContent = path ? `${source} / ${path}${dirty ? " *" : ""}` : "";
+}
+
+function saveConfigFile() {
+  if (!state.activeAgentId || !state.configEditor.path) {
+    showToast("请先选择要保存的文件", "error");
+    return;
+  }
+  if (!ensureConnected()) return;
+  const content = $("config-file-body")?.value ?? "";
+  send({
+    type: "write_agent_file",
+    agentId: state.activeAgentId,
+    source: state.configEditor.source,
+    path: state.configEditor.path,
+    content,
+  });
+}
+
+function createConfigFile(source) {
+  if (!state.activeAgentId) return;
+  const raw = prompt("新文件名（相对路径，如 notes.md）", `${source}.md`);
+  const path = String(raw || "").trim().replace(/^\/+/, "");
+  if (!path) return;
+  if (path.includes("..")) {
+    showToast("非法路径", "error");
+    return;
+  }
+  if (!ensureConnected()) return;
+  send({
+    type: "write_agent_file",
+    agentId: state.activeAgentId,
+    source,
+    path,
+    content: "",
+  });
+  openConfigFileEditor(source, path, "");
+}
+
 function renderAgents() {
   const list = $("agent-list");
   list.innerHTML = "";
@@ -781,7 +1011,12 @@ function renderAgents() {
 
 function deleteAgent(id, name) {
   if (!confirm(`确定删除 Agent「${name}」？主对话与讨论将一并删除。`)) return;
-  send({ type: "delete_agent", agentId: id });
+  if (!ensureConnected("无法删除：尚未连接")) return;
+  setWaitHint("正在删除 Agent…");
+  if (!send({ type: "delete_agent", agentId: id })) {
+    setWaitHint("");
+    showToast("删除失败：连接已断开", "error");
+  }
 }
 
 function resetAgent(id, name) {
@@ -792,8 +1027,13 @@ function resetAgent(id, name) {
   ) {
     return;
   }
+  if (!ensureConnected("无法重置：尚未连接")) return;
   closeAgentDrawer();
-  send({ type: "reset_agent", agentId: id });
+  setWaitHint("正在重置 Agent…");
+  if (!send({ type: "reset_agent", agentId: id })) {
+    setWaitHint("");
+    showToast("重置失败：连接已断开", "error");
+  }
 }
 
 function deleteDiscussion(discussionId) {
@@ -812,18 +1052,23 @@ function renderMessages(messages, { scroll = "restore" } = {}) {
     return;
   }
   const frag = document.createDocumentFragment();
-  messages.forEach((m, index) => {
-    try {
-      frag.appendChild(buildMessageEl(m, index));
-    } catch (err) {
-      console.error("render message failed", index, err);
-      const el = document.createElement("div");
-      el.className = `msg ${m.role || "assistant"}`;
-      el.dataset.messageIndex = String(index);
-      el.innerHTML = `<div class="body"><pre>${escapeHtml(m.content || "")}</pre></div>`;
-      frag.appendChild(el);
+  for (const turn of groupConversationTurns(messages)) {
+    const wrap = document.createElement("div");
+    wrap.className = "turn";
+    for (const item of turn) {
+      try {
+        wrap.appendChild(buildMessageEl(item.message, item.index));
+      } catch (err) {
+        console.error("render message failed", item.index, err);
+        const el = document.createElement("div");
+        el.className = `msg ${item.message.role || "assistant"}`;
+        el.dataset.messageIndex = String(item.index);
+        el.innerHTML = `<div class="body"><pre>${escapeHtml(item.message.content || "")}</pre></div>`;
+        wrap.appendChild(el);
+      }
     }
-  });
+    frag.appendChild(wrap);
+  }
   box.innerHTML = "";
   box.appendChild(frag);
   refreshAllDiscussionHighlights();
@@ -832,6 +1077,52 @@ function renderMessages(messages, { scroll = "restore" } = {}) {
   } else if (scroll === "restore") {
     restoreMessageScrollPosition(state.activeAgentId);
   }
+}
+
+function groupConversationTurns(messages) {
+  const turns = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    const last = turns[turns.length - 1];
+    const startNewTurn = message.role === "user" || !last || last.some((item) => item.message.role === "assistant");
+    if (startNewTurn) turns.push([]);
+    turns[turns.length - 1].push({ message, index });
+  }
+  return turns;
+}
+
+function lastTurnEl() {
+  const box = $("messages");
+  const turns = box?.querySelectorAll(":scope > .turn");
+  return turns?.length ? turns[turns.length - 1] : null;
+}
+
+function userTurnAwaitingReply() {
+  const turn = lastTurnEl();
+  if (!turn) return null;
+  if (turn.querySelector(":scope > .msg.user") && !turn.querySelector(":scope > .msg.assistant")) {
+    return turn;
+  }
+  return null;
+}
+
+function removeTurnIfEmpty(turn) {
+  if (!turn || !turn.classList.contains("turn")) return;
+  if (turn.querySelector(".msg")) return;
+  turn.remove();
+}
+
+function placeStreamAfterUser(streamEl, turn) {
+  if (!streamEl || !turn) return;
+  const user = turn.querySelector(":scope > .msg.user");
+  const oldTurn = streamEl.parentElement;
+  if (user) user.insertAdjacentElement("afterend", streamEl);
+  else if (streamEl.parentElement !== turn) turn.appendChild(streamEl);
+  if (oldTurn && oldTurn !== turn) removeTurnIfEmpty(oldTurn);
+}
+
+function attachStreamToUserTurn(streamEl, userTurn) {
+  placeStreamAfterUser(streamEl, userTurn);
 }
 
 function scrollStorageKey(agentId) {
@@ -904,7 +1195,163 @@ function resolveAssistantSegments(message) {
   return legacyMessageToSegments(message);
 }
 
-function renderAssistantSegment(body, seg, { thinkingOpen = false } = {}) {
+function groupAssistantRenderGroups(segments) {
+  const groups = [];
+  for (const seg of segments || []) {
+    if (seg.type === "text") {
+      groups.push({ type: "text", seg });
+      continue;
+    }
+    if (seg.type === "thinking" || seg.type === "tool") {
+      const last = groups[groups.length - 1];
+      if (last?.type === "trace") last.segments.push(seg);
+      else groups.push({ type: "trace", segments: [seg] });
+    }
+  }
+  return groups;
+}
+
+function traceStatusText(segments, { streaming = false, activityText = "" } = {}) {
+  const tools = (segments || []).filter((seg) => seg.type === "tool");
+  const thinking = (segments || []).filter((seg) => seg.type === "thinking");
+  const running = tools.find((seg) => seg.status === "running");
+  if (streaming) {
+    if (running) return running.label || running.name || "运行中…";
+    const live = String(activityText || "").trim();
+    if (live) return live;
+    if (thinking.length) return "思考中…";
+    return "Agent 运行中…";
+  }
+  if (thinking.length && tools.length) return `思考 · ${tools.length} 个步骤`;
+  if (tools.length === 1) return tools[0].label || tools[0].name || "1 个步骤";
+  if (tools.length) return `${tools.length} 个步骤`;
+  if (thinking.length) return "思考";
+  return "步骤";
+}
+
+function buildTraceCard(segments, { open = false, streaming = false, activityText = "" } = {}) {
+  const details = document.createElement("details");
+  details.className = "trace-card" + (streaming ? " running" : "");
+  details.open = !!open;
+  const summary = document.createElement("summary");
+  summary.className = "trace-summary";
+  const status = document.createElement("span");
+  status.className = "trace-status";
+  status.textContent = traceStatusText(segments, { streaming, activityText });
+  summary.appendChild(status);
+  details.appendChild(summary);
+  const body = document.createElement("div");
+  body.className = "trace-body";
+  details.appendChild(body);
+  patchTraceBody(body, segments);
+  return details;
+}
+
+function patchTraceBody(bodyEl, segments) {
+  if (!bodyEl) return;
+  const wanted = (segments || []).filter((seg) => seg.type === "thinking" || seg.type === "tool");
+  let index = 0;
+  for (const seg of wanted) {
+    let child = bodyEl.children[index];
+    if (seg.type === "thinking") {
+      if (!child || !child.classList.contains("thinking-body")) {
+        const el = document.createElement("div");
+        el.className = "thinking-body";
+        if (child) bodyEl.insertBefore(el, child);
+        else bodyEl.appendChild(el);
+        child = el;
+      }
+      if (child.textContent !== (seg.text || "")) child.textContent = seg.text || "";
+    } else {
+      if (!child || !child.classList.contains("tool-card")) {
+        const el = buildLiveToolCard(seg);
+        if (child) bodyEl.insertBefore(el, child);
+        else bodyEl.appendChild(el);
+        child = el;
+      } else {
+        child.className = "tool-card" + (seg.status === "running" ? " running" : " done");
+        const label = child.querySelector(".tool-label");
+        const next = seg.label || seg.name || "";
+        if (label && label.textContent !== next) label.textContent = next;
+      }
+    }
+    index += 1;
+  }
+  while (bodyEl.children.length > index) bodyEl.removeChild(bodyEl.lastChild);
+}
+
+function patchTraceCard(details, segments, { streaming = false, activityText = "" } = {}) {
+  details.classList.toggle("running", !!streaming);
+  const status = details.querySelector(".trace-status");
+  const next = traceStatusText(segments, { streaming, activityText });
+  if (status && status.textContent !== next) status.textContent = next;
+  patchTraceBody(details.querySelector(".trace-body"), segments);
+}
+
+function assistantRenderNodes(message, { streaming = false } = {}) {
+  const groups = groupAssistantRenderGroups(resolveAssistantSegments(message));
+  if (!streaming) return groups;
+  const texts = [];
+  const traceSegs = [];
+  for (const group of groups) {
+    if (group.type === "trace") traceSegs.push(...group.segments);
+    else texts.push(group);
+  }
+  return [{ type: "trace", segments: traceSegs }, ...texts];
+}
+
+function patchStreamMarkdown(el, text, streaming) {
+  const next = String(text || "");
+  if (streaming) {
+    if (el.dataset.md === next && el.dataset.mode === "plain") return;
+    el.dataset.md = next;
+    el.dataset.mode = "plain";
+    delete el.dataset.stable;
+    delete el.dataset.final;
+    el.classList.add("streaming-plain");
+    el.textContent = next;
+    return;
+  }
+  if (el.dataset.md === next && el.dataset.final === "1") return;
+  el.dataset.md = next;
+  el.dataset.final = "1";
+  el.dataset.mode = "md";
+  el.classList.remove("streaming-plain");
+  delete el.dataset.stable;
+  el.innerHTML = renderMarkdown(next);
+  enhanceMarkdown(el);
+}
+
+function patchAssistantBody(body, message, { streaming = false, activityText = "" } = {}) {
+  const nodes = assistantRenderNodes(message, { streaming });
+  let index = 0;
+  for (const node of nodes) {
+    let child = body.children[index];
+    if (node.type === "trace") {
+      if (!child || !child.classList.contains("trace-card")) {
+        const el = buildTraceCard(node.segments, { streaming, activityText });
+        if (child) body.insertBefore(el, child);
+        else body.appendChild(el);
+        child = el;
+      } else {
+        patchTraceCard(child, node.segments, { streaming, activityText });
+      }
+    } else {
+      if (!child || !child.classList.contains("stream-text")) {
+        const el = document.createElement("div");
+        el.className = "stream-text";
+        if (child) body.insertBefore(el, child);
+        else body.appendChild(el);
+        child = el;
+      }
+      patchStreamMarkdown(child, node.seg.text || "", streaming);
+    }
+    index += 1;
+  }
+  while (body.children.length > index) body.removeChild(body.lastChild);
+}
+
+function renderAssistantSegment(body, seg) {
   if (seg.type === "text") {
     const textEl = document.createElement("div");
     textEl.className = "stream-text";
@@ -913,25 +1360,40 @@ function renderAssistantSegment(body, seg, { thinkingOpen = false } = {}) {
     body.appendChild(textEl);
     return;
   }
-  if (seg.type === "thinking") {
-    const details = document.createElement("details");
-    details.className = "thinking-card";
-    details.open = thinkingOpen;
-    details.innerHTML = '<summary>思考过程</summary><div class="thinking-body"></div>';
-    details.querySelector(".thinking-body").textContent = seg.text || "";
-    body.appendChild(details);
-    return;
-  }
   if (seg.type === "tool") {
     body.appendChild(buildLiveToolCard(seg));
   }
 }
 
-function renderAssistantBody(body, message, { streaming = false } = {}) {
-  body.innerHTML = "";
-  for (const seg of resolveAssistantSegments(message)) {
-    renderAssistantSegment(body, seg, { thinkingOpen: streaming });
+function renderAssistantBody(body, message, { streaming = false, activityText = "" } = {}) {
+  if (streaming) {
+    patchAssistantBody(body, message, { streaming: true, activityText });
+    return;
   }
+  body.innerHTML = "";
+  const groups = groupAssistantRenderGroups(resolveAssistantSegments(message));
+  for (const group of groups) {
+    if (group.type === "trace") {
+      body.appendChild(buildTraceCard(group.segments, { activityText }));
+    } else {
+      renderAssistantSegment(body, group.seg);
+    }
+  }
+}
+
+function adoptStreamingAsCommitted(agent, message, index) {
+  const el = agent?.view?.streamingEl;
+  if (!el || !el.isConnected) return false;
+  el.className = "msg assistant";
+  el.dataset.messageIndex = String(index ?? "");
+  const body = el.querySelector(".body");
+  if (body) {
+    body.classList.remove("streaming");
+    patchAssistantBody(body, message, { streaming: false });
+  }
+  agent.view.streamingEl = null;
+  agent.view.thinkingEl = null;
+  return true;
 }
 
 function buildMessageEl(m, messageIndex) {
@@ -954,44 +1416,105 @@ function buildMessageEl(m, messageIndex) {
 function buildLiveToolCard(block) {
   const el = document.createElement("div");
   el.className = "tool-card" + (block.status === "running" ? " running" : " done");
-  el.innerHTML = `<span class="tool-status">${block.status === "running" ? "运行中" : "完成"}</span>
-    <span class="tool-label">${escapeHtml(block.label || block.name)}</span>`;
+  el.innerHTML = `<span class="tool-label">${escapeHtml(block.label || block.name)}</span>`;
   return el;
 }
 
 function startStreamingBubble(agent) {
   const box = $("messages");
+  if (!box) return false;
   const empty = box.querySelector(".empty-state");
   if (empty) empty.remove();
-  if (agent.view.streamingEl && box.contains(agent.view.streamingEl)) return;
+  const waiting = userTurnAwaitingReply();
+  if (agent.view.streamingEl && box.contains(agent.view.streamingEl)) {
+    const last = lastTurnEl();
+    if (last?.querySelector(":scope > .msg.user")) {
+      placeStreamAfterUser(agent.view.streamingEl, last);
+    }
+    return true;
+  }
+  if (!waiting) return false;
   state.autoScroll = true;
   agent.view.streamingEl = document.createElement("div");
   agent.view.streamingEl.className = "msg assistant";
   agent.view.streamingEl.innerHTML = '<div class="body streaming"></div>';
-  box.appendChild(agent.view.streamingEl);
-  scrollToBottom(true);
+  placeStreamAfterUser(agent.view.streamingEl, waiting);
+  patchAssistantBody(
+    agent.view.streamingEl.querySelector(".body"),
+    { segments: [] },
+    { streaming: true, activityText: agent.stream.activityText || "" }
+  );
+  followOutput();
+  return true;
 }
 
+const streamPaintFrames = new Map();
+
 function renderActiveStreaming(agent) {
-  if (!agent.view.streamingEl) startStreamingBubble(agent);
-  const body = agent.view.streamingEl.querySelector(".body");
-  renderAssistantBody(body, { segments: agent.stream.segments || [] }, { streaming: true });
-  if (state.autoScroll) scrollToBottom(false);
+  if (!agent?.id) return;
+  if (!startStreamingBubble(agent)) return;
+  if (streamPaintFrames.has(agent.id)) return;
+  streamPaintFrames.set(
+    agent.id,
+    requestAnimationFrame(() => {
+      streamPaintFrames.delete(agent.id);
+      const live = AgentFSM.get(agent.id);
+      if (!live || live.phase !== AgentFSM.Phase.RUNNING) return;
+      if (!startStreamingBubble(live)) return;
+      const body = live.view.streamingEl.querySelector(".body");
+      if (!body) return;
+      patchAssistantBody(
+        body,
+        { segments: live.stream.segments || [] },
+        { streaming: true, activityText: live.stream.activityText || "" }
+      );
+      followOutput();
+    })
+  );
 }
 
 function appendMessageDom(message, index) {
   const box = $("messages");
   const empty = box.querySelector(".empty-state");
   if (empty) empty.remove();
-  box.appendChild(buildMessageEl(message, index));
+  const el = buildMessageEl(message, index);
+  if (message.role === "user") {
+    const turn = document.createElement("div");
+    turn.className = "turn";
+    turn.appendChild(el);
+    box.appendChild(turn);
+    const agent = state.activeAgentId ? AgentFSM.get(state.activeAgentId) : null;
+    if (agent?.view?.streamingEl && box.contains(agent.view.streamingEl)) {
+      attachStreamToUserTurn(agent.view.streamingEl, turn);
+    } else if (agent && agent.phase === AgentFSM.Phase.RUNNING) {
+      startStreamingBubble(agent);
+      renderActiveStreaming(agent);
+    }
+    return;
+  }
+  let turn = userTurnAwaitingReply() || lastTurnEl();
+  if (!turn || turn.querySelector(".msg.assistant, .msg.error")) {
+    turn = document.createElement("div");
+    turn.className = "turn";
+    box.appendChild(turn);
+  }
+  turn.appendChild(el);
 }
 
 function showError(message) {
   const box = $("messages");
+  const empty = box.querySelector(".empty-state");
+  if (empty) empty.remove();
   const el = document.createElement("div");
   el.className = "msg error";
   el.innerHTML = `<div class="role">错误</div><div class="body">${escapeHtml(message)}</div>`;
-  box.appendChild(el);
+  let turn = lastTurnEl();
+  if (!turn) {
+    turn = document.createElement("div");
+    turn.className = "turn";
+    box.appendChild(turn);
+  }
+  turn.appendChild(el);
   scrollToBottom(true);
 }
 
@@ -999,10 +1522,10 @@ function renderBlock(block) {
   const el = document.createElement("div");
   if (block.type === "thinking") {
     el.className = "thinking-card-static";
-    el.innerHTML = `<details><summary>思考过程</summary><div class="thinking-body">${escapeHtml(block.text || "")}</div></details>`;
+    el.innerHTML = `<details><summary>思考</summary><div class="thinking-body">${escapeHtml(block.text || "")}</div></details>`;
   } else if (block.type === "tool" || block.type === "tool_call") {
     el.className = "tool-card done";
-    el.innerHTML = `<span class="tool-status">完成</span><span class="tool-label">${escapeHtml(block.label || block.name)}</span>`;
+    el.innerHTML = `<span class="tool-label">${escapeHtml(block.label || block.name)}</span>`;
   }
   return el;
 }
@@ -1080,60 +1603,94 @@ function isNearBottom(el) {
   return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
 }
 
+function followOutput() {
+  const box = $("messages");
+  if (!box || !state.autoScroll) return;
+  const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
+  if (maxScroll <= box.scrollTop + 1) return;
+  state.suppressScrollAutoUpdate = true;
+  box.scrollTop = maxScroll;
+  state.suppressScrollAutoUpdate = false;
+}
+
 function scrollToBottom(force) {
   const box = $("messages");
   if (!box) return;
   if (!force && !state.autoScroll) return;
   state.suppressScrollAutoUpdate = true;
-  box.scrollTop = box.scrollHeight;
+  box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
   state.suppressScrollAutoUpdate = false;
 }
 
-function isComposerBlocked() {
-  return isActiveBusy() || !!mainComposer?.isBlocked();
+function isUploading() {
+  return !!mainComposer?.isBlocked();
 }
 
 function updateChrome() {
+  const waitText = currentWaitText();
+  const waiting = !!waitText;
   const dot = $("status-dot");
   dot.className = "";
-  if (isActiveBusy()) dot.classList.add("busy");
+  if (isActiveBusy() || waiting) dot.classList.add("busy");
   else if (state.connected) dot.classList.add("connected");
+  dot.title = waitText || (state.connected ? "已连接" : "未连接");
 
   const btn = $("btn-send");
-  btn.textContent = mainComposer?.uploading ? "上传中…" : "发送";
-  btn.disabled = isComposerBlocked();
-  btn.classList.toggle("is-disabled", isComposerBlocked());
-
-  const machine = getActiveAgent();
-  const activity = machine?.stream?.activityText || "Agent 运行中…";
-  if (isActiveBusy()) showRunStatusBar(activity);
-  else hideRunStatusBar();
-  focusMessageInput();
+  const uploading = isUploading();
+  const stopping = isActiveBusy();
+  btn.classList.toggle("stop", stopping && !uploading);
+  btn.classList.toggle("is-disabled", uploading);
+  if (uploading) {
+    btn.textContent = "上传中…";
+    btn.disabled = true;
+  } else if (stopping) {
+    btn.textContent = "停止";
+    btn.disabled = false;
+  } else {
+    btn.textContent = "发送";
+    btn.disabled = false;
+  }
 }
 
-function showRunStatusBar(text) {
-  $("run-status-bar").classList.remove("hidden");
-  $("run-status-text").textContent = text || "Agent 运行中…";
-  $("btn-stop-run").disabled = false;
-  focusMessageInput();
+function currentWaitText() {
+  if (isActiveBusy()) {
+    const machine = getActiveAgent();
+    return machine?.stream?.activityText || "Agent 运行中…";
+  }
+  if (state.waitHint) return state.waitHint;
+  return "";
 }
 
-function hideRunStatusBar() {
-  $("run-status-bar").classList.add("hidden");
+function setWaitHint(text) {
+  state.waitHint = text || "";
+  updateChrome();
 }
 
 function focusMessageInput() {
   mainComposer?.focus();
 }
 
+function onComposerAction() {
+  if (isUploading() || !mainComposer) return;
+  if (isActiveBusy()) cancelRun();
+  else sendMessage();
+}
+
 function cancelRun() {
   if (!state.activeAgentId || !isActiveBusy()) return;
-  $("btn-stop-run").disabled = true;
+  if (!ensureConnected("无法停止：尚未连接")) return;
+  const btn = $("btn-send");
+  btn.disabled = true;
   send({ type: "cancel", agentId: state.activeAgentId });
 }
 
 async function sendMessage() {
-  if (isComposerBlocked() || !mainComposer || !state.activeAgentId) return;
+  if (isActiveBusy() || isUploading() || !mainComposer) return;
+  if (!state.activeAgentId) {
+    showToast("请先选择 Agent", "error");
+    return;
+  }
+  if (!ensureConnected("尚未连接到 Agent 服务，消息未发送")) return;
   try {
     await mainComposer.uploadPending(state.activeAgentId);
   } catch (err) {
@@ -1144,16 +1701,23 @@ async function sendMessage() {
   const { plain, serialized, attachments } = mainComposer.serialize();
   if (!plain.trim() && !attachments.length) return;
 
-  state.autoScroll = true;
-  mainComposer.clear();
-
-  send({
+  const payload = {
     type: "send",
     agentId: state.activeAgentId,
     message: plain,
     content: serialized || undefined,
     attachments,
-  });
+  };
+  if (!send(payload)) {
+    showToast("发送失败：连接已断开", "error");
+    return;
+  }
+
+  const activity = state.engineState === "ready" ? "Agent 运行中…" : "正在启动引擎…";
+  applyAgentEvent(state.activeAgentId, "run_started", { activity });
+
+  state.autoScroll = true;
+  mainComposer.clear();
   focusMessageInput();
 }
 
@@ -1795,6 +2359,7 @@ function showAgentDrawer() {
   if (!state.activeAgentId) return;
   $("agent-drawer").classList.add("open");
   if (state.activeAgent) populateAgentDrawer(state.activeAgent);
+  requestModelsIfNeeded();
   loadAgentSoul();
 }
 
@@ -1804,6 +2369,7 @@ function closeAgentDrawer() {
 
 function saveAgentConfig() {
   if (!state.activeAgentId || state.savingAgent) return;
+  if (!ensureConnected("无法保存：尚未连接")) return;
   const cwd = $("agent-cwd-input").value.trim();
   if (!cwd) {
     showToast("请选择工作目录", "error");
@@ -1814,7 +2380,7 @@ function saveAgentConfig() {
   const btn = $("btn-save-agent");
   btn.disabled = true;
   btn.textContent = "保存中…";
-  send({
+  if (!send({
     type: "update_agent",
     agentId: state.activeAgentId,
     name: $("agent-name-input").value.trim() || "Agent",
@@ -1828,7 +2394,12 @@ function saveAgentConfig() {
     skillsDir: $("skills-dir-input").value.trim(),
     memoryDir: $("memory-dir-input").value.trim(),
     soul: $("soul-editor").value,
-  });
+  })) {
+    state.savingAgent = false;
+    resetSaveAgentButton();
+    setDrawerSaveStatus("");
+    showToast("保存失败：连接已断开", "error");
+  }
 }
 
 function saveSoul() {
@@ -2241,6 +2812,20 @@ function syncExpandedDiscussionId() {
   if (state.maximizedDiscussionId && state.maximizedDiscussionId !== state.expandedDiscussionId) {
     state.maximizedDiscussionId = null;
   }
+  if (!state.expandedDiscussionId) {
+    const hasExplicitCollapse = state.discussions.some((d) => d.collapsed === true);
+    if (hasExplicitCollapse) {
+      const open = state.discussions.find((d) => d.collapsed === false);
+      if (open) state.expandedDiscussionId = open.id;
+    }
+  }
+}
+
+function persistDiscussionCollapsed(discussionId, collapsed) {
+  if (!discussionId) return;
+  const item = state.discussions.find((d) => d.id === discussionId);
+  if (item) item.collapsed = collapsed;
+  send({ type: "set_discussion_collapsed", discussionId, collapsed });
 }
 
 function setExpandedDiscussion(discussionId) {
@@ -2248,17 +2833,22 @@ function setExpandedDiscussion(discussionId) {
   if (state.expandedDiscussionId === discussionId) {
     state.expandedDiscussionId = null;
     state.maximizedDiscussionId = null;
+    persistDiscussionCollapsed(discussionId, true);
   } else {
+    if (state.expandedDiscussionId) persistDiscussionCollapsed(state.expandedDiscussionId, true);
     state.expandedDiscussionId = discussionId;
     state.maximizedDiscussionId = null;
+    persistDiscussionCollapsed(discussionId, false);
   }
   syncDiscussionPanelStates();
 }
 
 function expandDiscussion(discussionId) {
   if (!discussionId || state.expandedDiscussionId === discussionId) return;
+  if (state.expandedDiscussionId) persistDiscussionCollapsed(state.expandedDiscussionId, true);
   state.expandedDiscussionId = discussionId;
   state.maximizedDiscussionId = null;
+  persistDiscussionCollapsed(discussionId, false);
   syncDiscussionPanelStates();
 }
 
@@ -2405,11 +2995,24 @@ function buildDiscussionPanel(d) {
 
   const input = composer.querySelector(".discussion-input");
   const sendBtn = composer.querySelector(".discussion-send");
+  if (drt.busy) {
+    input.disabled = true;
+    sendBtn.disabled = true;
+  }
   const doSend = () => {
     const text = input.value.trim();
     if (!text) return;
+    if (!ensureConnected("讨论未发送：尚未连接到服务")) return;
+    if (!send({ type: "discussion_send", discussionId: d.id, message: text })) {
+      showToast("讨论未发送：连接已断开", "error");
+      return;
+    }
     input.value = "";
-    send({ type: "discussion_send", discussionId: d.id, message: text });
+    const runtime = getDiscussionRuntime(d.id);
+    runtime.busy = true;
+    updateDiscussionTitleBusy(d.id, true);
+    sendBtn.disabled = true;
+    input.disabled = true;
   };
   sendBtn.onclick = doSend;
   input.onkeydown = (e) => {
@@ -2528,6 +3131,10 @@ function updateDiscussionTitleBusy(discussionId, busy) {
   titleBtn.dataset.busyLabel = label;
   titleBtn.classList.toggle("is-busy", busy);
   titleBtn.textContent = busy ? `● ${label}` : label;
+  const input = panel.querySelector(".discussion-input");
+  const sendBtn = panel.querySelector(".discussion-send");
+  if (input) input.disabled = !!busy;
+  if (sendBtn) sendBtn.disabled = !!busy;
 }
 
 function updateDiscussionStreaming(discussionId, drt) {
@@ -2539,11 +3146,17 @@ function updateDiscussionStreaming(discussionId, drt) {
     streamEl.className = "discussion-msg assistant streaming";
     panel.querySelector(".discussion-messages").appendChild(streamEl);
   }
-  streamEl.innerHTML = "";
-  const body = document.createElement("div");
-  body.className = "discussion-msg-body";
-  renderAssistantBody(body, { segments: drt.segments || [] }, { streaming: true });
-  streamEl.appendChild(body);
+  let body = streamEl.querySelector(".discussion-msg-body");
+  if (!body) {
+    body = document.createElement("div");
+    body.className = "discussion-msg-body";
+    streamEl.appendChild(body);
+  }
+  patchAssistantBody(
+    body,
+    { segments: drt.segments || [] },
+    { streaming: true, activityText: drt.activityText || "" }
+  );
   const msgBox = panel.querySelector(".discussion-messages");
   msgBox.scrollTop = msgBox.scrollHeight;
 }
@@ -2631,12 +3244,9 @@ function wrapFirstTextMatch(root, search, discussionId, offset) {
   }
 
   let idx = -1;
-  const startFrom = Number.isFinite(offset) && offset > 0 ? offset : 0;
-  if (startFrom) {
-    const at = full.indexOf(search, startFrom);
-    if (at >= 0) idx = at;
-  }
-  if (idx < 0) idx = full.indexOf(search);
+  const hasOffset = Number.isFinite(offset) && offset >= 0;
+  const startFrom = hasOffset ? offset : 0;
+  idx = full.indexOf(search, startFrom);
   if (idx < 0) return null;
   const endIdx = idx + search.length;
 
@@ -2811,9 +3421,53 @@ function renderModels() {
       state.defaultModel = m.id;
       $("model-name").textContent = m.id;
       $("model-modal").classList.remove("open");
+      fillModelSelect($("agent-model-input"), m.id);
     };
     list.appendChild(el);
   }
+}
+
+function modelCatalog() {
+  const byId = new Map();
+  for (const item of state.models || []) {
+    const id = String(item?.id || "").trim();
+    if (!id) continue;
+    byId.set(id, { id, name: item.name || id });
+  }
+  return byId;
+}
+
+function fillModelSelect(selectEl, selectedId) {
+  if (!selectEl) return;
+  const selected = String(selectedId || "").trim() || state.defaultModel || "composer-2.5";
+  const byId = modelCatalog();
+  if (!byId.has(selected)) byId.set(selected, { id: selected, name: selected });
+  if (!byId.has("composer-2.5")) byId.set("composer-2.5", { id: "composer-2.5", name: "composer-2.5" });
+  const models = [...byId.values()].sort((a, b) =>
+    String(a.name || a.id).localeCompare(String(b.name || b.id), "zh")
+  );
+  selectEl.innerHTML = "";
+  for (const model of models) {
+    const opt = document.createElement("option");
+    opt.value = model.id;
+    opt.textContent = model.name || model.id;
+    selectEl.appendChild(opt);
+  }
+  selectEl.value = selected;
+}
+
+function syncModelSelects() {
+  fillModelSelect($("setup-model"), $("setup-model")?.value || state.defaultModel);
+  fillModelSelect($("system-default-model"), $("system-default-model")?.value || state.defaultModel);
+  fillModelSelect(
+    $("agent-model-input"),
+    $("agent-model-input")?.value || state.activeAgent?.model || state.defaultModel
+  );
+}
+
+function requestModelsIfNeeded() {
+  if (state.models.length || !state.connected || state.needsSetup) return;
+  send({ type: "list_models" });
 }
 
 function applyFontSize(size) {
@@ -2831,11 +3485,12 @@ function loadFontSizePreference() {
 
 function openSystemSettings() {
   $("system-default-cwd").value = state.defaultCwd || "";
-  $("system-default-model").value = state.defaultModel || "composer-2.5";
+  fillModelSelect($("system-default-model"), state.defaultModel || "composer-2.5");
   $("system-api-key").value = "";
   $("system-settings-error").textContent = "";
   $("system-font-size").value = localStorage.getItem(FONT_SIZE_KEY) || "medium";
   $("system-settings-modal").classList.add("open");
+  requestModelsIfNeeded();
 }
 
 function closeSystemSettings() {
@@ -2867,7 +3522,7 @@ async function saveSystemSettings() {
     state.defaultCwd = data.defaultCwd || defaultCwd;
     state.defaultModel = data.defaultModel || defaultModel;
     $("setup-cwd").value = state.defaultCwd;
-    $("setup-model").value = state.defaultModel;
+    fillModelSelect($("setup-model"), state.defaultModel);
     closeSystemSettings();
     showToast("系统设置已保存");
   } catch (err) {
@@ -2926,8 +3581,7 @@ function bindUi() {
   });
 
   $("btn-new-agent").onclick = createAgent;
-  $("btn-send").onclick = sendMessage;
-  $("btn-stop-run").onclick = cancelRun;
+  $("btn-send").onclick = onComposerAction;
   $("model-badge").onclick = () => $("model-modal").classList.add("open");
   $("model-modal-close").onclick = () => $("model-modal").classList.remove("open");
   $("btn-setup-save").onclick = saveSetup;
@@ -2958,6 +3612,15 @@ function bindUi() {
   bindClearPathButton("btn-clear-skills-dir", "skills-dir-input");
   bindPickFolderButton("btn-pick-memory-dir", "memory-dir-input");
   bindClearPathButton("btn-clear-memory-dir", "memory-dir-input");
+  $("btn-new-rules-file")?.addEventListener("click", () => createConfigFile("rules"));
+  $("btn-new-skills-file")?.addEventListener("click", () => createConfigFile("skills"));
+  $("btn-new-memory-file")?.addEventListener("click", () => createConfigFile("memory"));
+  $("btn-save-config-file")?.addEventListener("click", saveConfigFile);
+  $("config-file-body")?.addEventListener("input", () => {
+    if (!state.configEditor.path) return;
+    state.configEditor.dirty = true;
+    syncConfigEditorLabel();
+  });
   bindPickFolderButton("btn-pick-setup-cwd", "setup-cwd");
   bindClearPathButton("btn-clear-setup-cwd", "setup-cwd");
   $("btn-discuss-toggle").onclick = () => toggleDiscussRail();
@@ -2967,6 +3630,7 @@ function bindUi() {
   });
   $("btn-summarize-selected")?.addEventListener("click", () => {
     if (!state.activeAgentId || state.selectedDiscussionIds.size === 0) return;
+    if (!ensureConnected()) return;
     send({
       type: "summarize_discussions",
       agentId: state.activeAgentId,
@@ -3018,6 +3682,7 @@ function bindUi() {
 bindUi();
 loadFontSizePreference();
 configureMarked();
+syncModelSelects();
 connect();
 
 function configureMarked() {
