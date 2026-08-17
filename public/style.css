@@ -789,11 +789,33 @@ body {
 
 .trace-card.running .trace-summary::before,
 .trace-card.running .trace-status {
-  color: var(--accent2);
+  color: var(--text-dim);
 }
 
 .trace-card.running .trace-summary::before {
   animation: pulse 1.2s infinite;
+}
+
+.trace-card.running .trace-status {
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background-image: linear-gradient(
+    90deg,
+    var(--text-faint) 0%,
+    var(--text-faint) 38%,
+    var(--text) 50%,
+    var(--text-faint) 62%,
+    var(--text-faint) 100%
+  );
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: traceShine 0.9s linear infinite;
+}
+
+@keyframes traceShine {
+  from { background-position: 120% 0; }
+  to { background-position: -20% 0; }
 }
 
 .trace-status {
