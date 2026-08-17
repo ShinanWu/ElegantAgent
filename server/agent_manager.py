@@ -29,7 +29,6 @@ from .agent_workspace import (
 from .agents import AgentRecord, load_agents, new_agent, save_agents
 from .bridge_env import bridge_state_root, prepare_bridge_env, workspace_path
 from .discussion_manager import DiscussionManager
-from .images import prepare_image_for_sdk
 from .prompt_builder import build_prompt_text, merge_user_display_content
 from .stream_format import (
     append_text_segment,
@@ -46,7 +45,6 @@ EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 T = TypeVar("T")
 
 IMAGE_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp"}
-STREAM_STALL_SECONDS = 120
 
 _TERMINAL_RUN_STATUSES = frozenset(
     {"cancelled", "canceled", "completed", "failed", "error", "done", "success"}
@@ -69,17 +67,6 @@ async def _safe_cancel_run(run: Any, *, agent_id: str = "") -> None:
         )
     except Exception:
         logger.exception("cancel run failed (agent=%s)", agent_id or "?")
-
-
-class _StreamStallError(CursorAgentError):
-    """流式事件长时间无实质输出。不自动重试，避免大图把三次尝试都卡住。"""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "模型长时间没有输出。若刚发送了图片，请改用较小的图后重试。",
-            code="stream_stall",
-            is_retryable=False,
-        )
 
 
 class _AgentSilentError(CursorAgentError):
@@ -190,6 +177,14 @@ class AgentManager:
         return AgentManager._is_bridge_error(err) or AgentManager._is_stale_agent_error(err)
 
     @staticmethod
+    def _error_detail(err: BaseException) -> str:
+        if isinstance(err, CursorAgentError):
+            parts = [p for p in (err.code, err.message) if p]
+            if parts:
+                return ": ".join(parts)
+        return str(err).strip()
+
+    @staticmethod
     def _format_run_error(err: BaseException | None) -> str:
         if err is None:
             return "Agent 运行失败，请稍后重试。"
@@ -198,17 +193,14 @@ class AgentManager:
                 "（多次重试后仍未收到模型输出。已自动重建 Agent 连接并回填本地对话历史，"
                 "但本轮仍未能恢复。请再发一次消息；若仍无回复，可新建 Agent 或检查 API Key / 网络。）"
             )
-        if isinstance(err, _StreamStallError):
-            return err.message or "模型长时间没有输出，请稍后重试。"
-        detail = str(err)
-        if isinstance(err, CursorAgentError):
-            parts = [p for p in (err.code, err.message) if p]
-            detail = ": ".join(parts) if parts else detail
-        return (
-            "Agent 引擎连接已断开，自动恢复未成功。"
-            "请再试一次；若仍失败，请完全退出应用后重新打开。"
-            f"（{detail}）"
-        )
+        detail = AgentManager._error_detail(err) or "Agent 运行失败，请稍后重试。"
+        if AgentManager._is_bridge_error(err):
+            return (
+                "Agent 引擎连接已断开，自动恢复未成功。"
+                "请再试一次；若仍失败，请完全退出应用后重新打开。"
+                f"（{detail}）"
+            )
+        return detail
 
     @staticmethod
     def _is_bridge_error(err: BaseException) -> bool:
@@ -491,13 +483,8 @@ class AgentManager:
             mime, _ = mimetypes.guess_type(path.name)
             mime = mime or "application/octet-stream"
             if mime in IMAGE_MIME:
-                prepared = prepare_image_for_sdk(path)
-                try:
-                    logger.info("附加图片 %s mime=%s size=%s", prepared, mime, prepared.stat().st_size)
-                    images.append(SDKImage.from_file(prepared, mime_type=mime))
-                finally:
-                    if prepared != path:
-                        prepared.unlink(missing_ok=True)
+                logger.info("附加图片 %s mime=%s size=%s", path, mime, path.stat().st_size)
+                images.append(SDKImage.from_file(path, mime_type=mime))
             else:
                 extra_lines.append(f"[引用文件: {path}]")
 
@@ -614,14 +601,6 @@ class AgentManager:
             user_message = self._build_user_message(
                 record, display_text or "请查看引用的文件或目录。", attachments
             )
-            if isinstance(user_message, UserMessage) and user_message.images:
-                await emit(
-                    {
-                        "type": "stream",
-                        "agentId": agent_id,
-                        "activity": "正在分析图片…",
-                    }
-                )
 
             try:
                 await self._ensure_client()
@@ -682,11 +661,15 @@ class AgentManager:
 
         self._runs.pop(agent_id, None)
         self._rebuilt_agents.discard(agent_id)
+        err_text = self._format_run_error(last_err)
+        error_msg = {"role": "error", "content": err_text}
+        index = self._commit_message(record, error_msg)
+        await self._emit_message_committed(emit, agent_id, record, error_msg, index)
         await emit(
             {
                 "type": "error",
                 "agentId": agent_id,
-                "message": self._format_run_error(last_err),
+                "message": err_text,
                 "retryable": isinstance(last_err, CursorAgentError) and last_err.is_retryable,
             }
         )
@@ -746,12 +729,19 @@ class AgentManager:
             append_text_segment(segments, fallback)
             return self._assistant_message_from_segments(segments)
 
+        status = str(getattr(result, "status", "") or "").lower()
         logger.warning(
-            "Agent %s 运行结束但无输出 (status=%s, run=%s)，抛出 _AgentSilentError 触发重试",
+            "Agent %s 运行结束但无输出 (status=%s, run=%s)",
             agent_id,
-            getattr(result, "status", ""),
+            status,
             getattr(result, "id", ""),
         )
+        if status in {"error", "failed"}:
+            raise CursorAgentError(
+                "模型这次没有返回内容。",
+                code="run_error",
+                is_retryable=False,
+            )
         raise _AgentSilentError()
 
     async def _run_once(
@@ -774,6 +764,7 @@ class AgentManager:
                 "agentId": agent_id,
                 "runId": run.id,
                 "sdkAgentId": sdk_agent.agent_id,
+                "activity": "Agent 运行中…",
             }
         )
 
@@ -782,25 +773,21 @@ class AgentManager:
             return
 
         segments: list[dict[str, Any]] = []
-        last_progress = asyncio.get_running_loop().time()
-        event_iter = run.events().__aiter__()
-        while True:
+        event_count = 0
+        async for event in run.events():
+            event_count += 1
+            if event_count == 1:
+                msg = getattr(event, "sdk_message", None)
+                logger.info(
+                    "Agent %s 首个流式事件 kind=%s type=%s",
+                    agent_id,
+                    getattr(event, "kind", ""),
+                    getattr(msg, "type", "") if msg is not None else "",
+                )
             if self._cancel_requested.get(agent_id):
                 break
-            remaining = max(1.0, STREAM_STALL_SECONDS - (asyncio.get_running_loop().time() - last_progress))
-            try:
-                event = await asyncio.wait_for(event_iter.__anext__(), timeout=remaining)
-            except StopAsyncIteration:
-                break
-            except asyncio.TimeoutError as err:
-                logger.warning("Agent %s 流式输出停滞 %.0fs", agent_id, STREAM_STALL_SECONDS)
-                await self._abort_run(agent_id, run)
-                raise _StreamStallError() from err
-            useful = False
             for payload in serialize_run_event(event):
                 apply_payload_to_segments(segments, payload)
-                if payload.get("text") or payload.get("block"):
-                    useful = True
                 await emit(
                     {
                         "type": "stream",
@@ -808,8 +795,6 @@ class AgentManager:
                         **payload,
                     }
                 )
-            if useful:
-                last_progress = asyncio.get_running_loop().time()
 
         if self._cancel_requested.get(agent_id):
             await self._abort_run(agent_id, run)
@@ -817,6 +802,13 @@ class AgentManager:
 
         result = await run.wait()
         self._runs.pop(agent_id, None)
+        logger.info(
+            "Agent %s run 结束 status=%s events=%s run=%s",
+            agent_id,
+            getattr(result, "status", ""),
+            event_count,
+            getattr(result, "id", ""),
+        )
 
         assistant_msg = await self._finalize_assistant_message(
             segments=segments,

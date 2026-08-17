@@ -15,5 +15,5 @@
     <choice id="com.cursor.agent.pi.pkg" visible="false">
         <pkg-ref id="com.cursor.agent.pi"/>
     </choice>
-    <pkg-ref id="com.cursor.agent.pi" version="1.0.3" onConclusion="none">CursorAgentPi-component.pkg</pkg-ref>
+    <pkg-ref id="com.cursor.agent.pi" version="1.0.4" onConclusion="none">CursorAgentPi-component.pkg</pkg-ref>
 </installer-gui-script>

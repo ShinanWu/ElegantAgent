@@ -286,7 +286,6 @@ const AgentFSM = (() => {
         agent.phase = Phase.IDLE;
         clearStream(agent);
         result.streamChanged = true;
-        result.needsResync = true;
         break;
 
       case "ws_disconnected":

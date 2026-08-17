@@ -642,10 +642,9 @@ function handleMessage(msg) {
         setDrawerSaveStatus("");
       }
       if (msg.agentId) {
-        const fx = applyAgentEvent(msg.agentId, "run_error", { message: msg.message });
-        if (isActive(msg.agentId)) {
+        applyAgentEvent(msg.agentId, "run_error", { message: msg.message });
+        if (isActive(msg.agentId) && !lastTurnEl()?.querySelector(".msg.error")) {
           showError(msg.message);
-          if (fx.needsResync) fetchConversation(msg.agentId);
         }
       } else if (!msg.discussionId && !msg.combinedSummaryId) {
         showError(msg.message);
@@ -674,7 +673,9 @@ function applyAgentEvent(agentId, event, payload) {
     if (message.role === "assistant" && adoptStreamingAsCommitted(fx.agent, message, fx.agent.messages.length - 1)) {
       followOutput();
     } else {
-      if (message.role === "assistant") AgentFSM.removeStreamViewBeforeCommit(fx.agent);
+      if (message.role === "assistant" || message.role === "error") {
+        AgentFSM.removeStreamViewBeforeCommit(fx.agent);
+      }
       appendMessageDom(message, fx.agent.messages.length - 1);
       if (message.role === "user") state.autoScroll = true;
       scrollToBottom(message.role === "user" || state.autoScroll);
@@ -1084,7 +1085,10 @@ function groupConversationTurns(messages) {
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     const last = turns[turns.length - 1];
-    const startNewTurn = message.role === "user" || !last || last.some((item) => item.message.role === "assistant");
+    const startNewTurn =
+      message.role === "user" ||
+      !last ||
+      last.some((item) => item.message.role === "assistant" || item.message.role === "error");
     if (startNewTurn) turns.push([]);
     turns[turns.length - 1].push({ message, index });
   }
@@ -1100,7 +1104,10 @@ function lastTurnEl() {
 function userTurnAwaitingReply() {
   const turn = lastTurnEl();
   if (!turn) return null;
-  if (turn.querySelector(":scope > .msg.user") && !turn.querySelector(":scope > .msg.assistant")) {
+  if (
+    turn.querySelector(":scope > .msg.user") &&
+    !turn.querySelector(":scope > .msg.assistant, :scope > .msg.error")
+  ) {
     return turn;
   }
   return null;
@@ -1400,6 +1407,10 @@ function buildMessageEl(m, messageIndex) {
   const el = document.createElement("div");
   el.className = `msg ${m.role}`;
   el.dataset.messageIndex = String(messageIndex ?? "");
+  if (m.role === "error") {
+    el.innerHTML = `<div class="role">错误</div><div class="body">${escapeHtml(m.content || "")}</div>`;
+    return el;
+  }
   el.innerHTML = `<div class="body"></div>`;
   const body = el.querySelector(".body");
   if (m.role === "assistant") {
@@ -1490,6 +1501,16 @@ function appendMessageDom(message, index) {
       startStreamingBubble(agent);
       renderActiveStreaming(agent);
     }
+    return;
+  }
+  if (message.role === "error") {
+    let turn = lastTurnEl();
+    if (!turn) {
+      turn = document.createElement("div");
+      turn.className = "turn";
+      box.appendChild(turn);
+    }
+    turn.appendChild(el);
     return;
   }
   let turn = userTurnAwaitingReply() || lastTurnEl();
