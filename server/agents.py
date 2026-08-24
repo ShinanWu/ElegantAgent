@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from .paths import agents_file
+from .json_store import load_json_object, save_json_object
 
 
 @dataclass
@@ -73,26 +73,27 @@ def new_agent(
 
 def load_agents() -> dict[str, AgentRecord]:
     path = agents_file()
-    if not path.exists():
-        return {}
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = load_json_object(path, label="Agent 数据")
     records: dict[str, AgentRecord] = {}
     for aid, data in raw.items():
-        data.setdefault("enable_soul", False)
-        data.setdefault("enable_rules", False)
-        data.setdefault("enable_skills", False)
-        data.setdefault("enable_memory", False)
-        data.setdefault("rules_dir", "")
-        data.setdefault("skills_dir", "")
-        data.setdefault("memory_dir", "")
-        records[aid] = AgentRecord(**data)
+        try:
+            if not isinstance(data, dict):
+                raise TypeError("Agent 记录必须是对象")
+            item = dict(data)
+            item.setdefault("enable_soul", False)
+            item.setdefault("enable_rules", False)
+            item.setdefault("enable_skills", False)
+            item.setdefault("enable_memory", False)
+            item.setdefault("rules_dir", "")
+            item.setdefault("skills_dir", "")
+            item.setdefault("memory_dir", "")
+            records[aid] = AgentRecord(**item)
+        except (TypeError, ValueError):
+            continue
     return records
 
 
 def save_agents(agents: dict[str, AgentRecord]) -> None:
     path = agents_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {aid: asdict(rec) for aid, rec in agents.items()}
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    save_json_object(path, payload)

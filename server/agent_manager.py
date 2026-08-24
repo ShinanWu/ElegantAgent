@@ -29,7 +29,7 @@ from .agent_workspace import (
 from .agents import AgentRecord, load_agents, new_agent, save_agents
 from .bridge_env import bridge_state_root, prepare_bridge_env, workspace_path
 from .discussion_manager import DiscussionManager
-from .prompt_builder import build_prompt_text, merge_user_display_content
+from .prompt_builder import ATTACH_MARKER_RE, build_prompt_text, merge_user_display_content
 from .stream_format import (
     append_text_segment,
     apply_payload_to_segments,
@@ -190,8 +190,8 @@ class AgentManager:
             return "Agent 运行失败，请稍后重试。"
         if isinstance(err, _AgentSilentError):
             return (
-                "（多次重试后仍未收到模型输出。已自动重建 Agent 连接并回填本地对话历史，"
-                "但本轮仍未能恢复。请再发一次消息；若仍无回复，可新建 Agent 或检查 API Key / 网络。）"
+                "暂时没能接上对话。请再发一次消息；"
+                "若仍无回复，可检查网络或 API Key。"
             )
         detail = AgentManager._error_detail(err) or "Agent 运行失败，请稍后重试。"
         if AgentManager._is_bridge_error(err):
@@ -409,7 +409,36 @@ class AgentManager:
         save_agents(self.agents)
         logger.warning("已重置 Agent %s 的 SDK 绑定", agent_id)
 
+    def _has_prior_conversation(self, record: AgentRecord) -> bool:
+        """本地是否已有可回填的上文（不含本轮刚 commit 的最后一条 user）。"""
+        history = record.messages[:-1] if record.messages else []
+        for m in history:
+            role = m.get("role")
+            if role not in ("user", "assistant"):
+                continue
+            content = str(m.get("content") or "").strip()
+            if content:
+                return True
+            segments = m.get("segments") or []
+            if any(
+                isinstance(seg, dict) and seg.get("type") == "text" and str(seg.get("text") or "").strip()
+                for seg in segments
+            ):
+                return True
+        return False
+
+    def _mark_needs_history(self, record: AgentRecord, *, reason: str) -> None:
+        if not self._has_prior_conversation(record):
+            return
+        self._rebuilt_agents.add(record.id)
+        logger.info("将回填本地对话历史 agent=%s reason=%s", record.id, reason)
+
     async def _ensure_sdk_agent(self, record: AgentRecord) -> Any:
+        """拿到可用的 SDK Agent：内存命中 → resume → 新建。
+
+        新建或 resume 失败后重建时，若本地已有对话，标记回填历史，
+        让用户感觉永远能接上，而不是丢上下文。
+        """
         if record.id in self._sdk_agents:
             return self._sdk_agents[record.id]
 
@@ -419,31 +448,38 @@ class AgentManager:
             model=record.model,
             local=LocalAgentOptions(
                 cwd=workspace_path(record.cwd),
-                sandbox_options=SandboxOptions(enabled=False),
+                sandbox_options=SandboxOptions(enabled=True),
             ),
         )
 
         agent = None
-        if record.sdk_agent_id:
+        resumed = False
+        previous_sdk_id = record.sdk_agent_id
+        if previous_sdk_id:
             try:
-                agent = await client.agents.resume(record.sdk_agent_id, options)
-            except CursorAgentError as err:
-                if self._is_recoverable_error(err):
-                    logger.warning("恢复 SDK Agent %s 失败: %s", record.sdk_agent_id, err.message)
-                    self._reset_sdk_binding(record)
-                else:
-                    raise
+                agent = await client.agents.resume(previous_sdk_id, options)
+                resumed = True
             except Exception as err:
                 if self._is_bridge_error(err):
-                    logger.warning("恢复 SDK Agent %s 时 bridge 异常: %s", record.sdk_agent_id, err)
-                    self._reset_sdk_binding(record)
-                else:
+                    # bridge 挂了：交给外层重启，不要当成「会话丢了」去新建空 Agent
                     raise
+                logger.warning(
+                    "恢复 SDK Agent %s 失败，将新建并回填历史: %s",
+                    previous_sdk_id,
+                    err,
+                )
+                self._reset_sdk_binding(record)
+
         if agent is None:
             agent = await client.agents.create(options)
+            reason = "resume_failed" if previous_sdk_id else "no_sdk_id"
+            self._mark_needs_history(record, reason=reason)
+
         record.sdk_agent_id = agent.agent_id
         save_agents(self.agents)
         self._sdk_agents[record.id] = agent
+        if resumed:
+            logger.info("已 resume SDK Agent %s → %s", record.id, agent.agent_id)
         return agent
 
     async def list_models(self) -> list[dict[str, str]]:
@@ -520,9 +556,18 @@ class AgentManager:
             label = "用户" if role == "user" else "助手" if role == "assistant" else None
             if label is None:
                 continue
+            # 去掉附件标记，只保留可读文本，避免污染重建后的上下文
+            cleaned = ATTACH_MARKER_RE.sub("", content).strip()
+            content = cleaned or "(含附件)"
+            if len(content) > 4000:
+                content = content[:3999] + "…"
             turns.append(f"{label}: {content}")
         if not turns:
             return current
+
+        # 只保留最近若干轮，避免提示过长
+        if len(turns) > 40:
+            turns = turns[-40:]
 
         history_text = "\n\n".join(turns)
         current_text = current.text if isinstance(current, UserMessage) else str(current)
@@ -623,9 +668,12 @@ class AgentManager:
         for attempt in range(max_attempts):
             if attempt == 1:
                 self._reset_sdk_binding(record)
+                self._mark_needs_history(record, reason="retry_after_failure")
+                # 即使没有上文，也要新建会话；有上文则 _run_once 会注入历史
                 self._rebuilt_agents.add(agent_id)
             elif attempt == 2:
                 await self._restart_bridge()
+                self._mark_needs_history(record, reason="retry_after_bridge_restart")
                 self._rebuilt_agents.add(agent_id)
 
             try:
@@ -729,19 +777,12 @@ class AgentManager:
             append_text_segment(segments, fallback)
             return self._assistant_message_from_segments(segments)
 
-        status = str(getattr(result, "status", "") or "").lower()
         logger.warning(
-            "Agent %s 运行结束但无输出 (status=%s, run=%s)",
+            "Agent %s 运行结束但无输出 (status=%s, run=%s)，视为会话失效并重试",
             agent_id,
-            status,
+            getattr(result, "status", ""),
             getattr(result, "id", ""),
         )
-        if status in {"error", "failed"}:
-            raise CursorAgentError(
-                "模型这次没有返回内容。",
-                code="run_error",
-                is_retryable=False,
-            )
         raise _AgentSilentError()
 
     async def _run_once(

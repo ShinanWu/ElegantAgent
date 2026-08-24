@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>yoya</title>
+    <link rel="icon" href="/static/app-logo.png" />
     <link rel="stylesheet" href="/static/style.css" />
     <script src="/static/vendor/marked.min.js"></script>
     <script src="/static/vendor/highlight.min.js"></script>
@@ -189,10 +190,10 @@
         <p class="setup-desc">
           首次使用请填写 Cursor API Key，可在
           <a href="https://cursor.com/dashboard/api?section=user-keys#user-api-keys" target="_blank" rel="noopener">Cursor 控制台</a>
-          获取。密钥仅保存在本机。
+          获取。密钥保存在 macOS 钥匙串，不会写入项目文件。
         </p>
         <label class="field-label" for="setup-api-key">API Key</label>
-        <input id="setup-api-key" type="password" placeholder="cursor_..." autocomplete="off" />
+        <input id="setup-api-key" type="password" placeholder="crsr_..." autocomplete="off" />
         <label class="field-label" for="setup-cwd">默认工作目录</label>
         <div class="path-row">
           <input id="setup-cwd" type="text" readonly placeholder="点击右侧按钮选择目录" />
@@ -235,6 +236,9 @@
 
         <label class="field-label" for="system-default-model">默认模型</label>
         <select id="system-default-model" class="settings-select"></select>
+
+        <p class="field-hint">Agent 默认在 Cursor 沙箱中运行，仅对所选工作目录拥有读写权限；网络默认受限。</p>
+        <p id="system-version" class="field-hint">yoya</p>
 
         <p id="system-settings-error" class="setup-error"></p>
         <button id="btn-system-settings-save" type="button" class="setup-primary">保存</button>

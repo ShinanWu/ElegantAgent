@@ -169,9 +169,10 @@ class DiscussionManager:
             api_key=self._manager.api_key,
             model=record.model,
             mode="agent",
+            tools=["read", "grep", "glob", "ls"],
             local=LocalAgentOptions(
                 cwd=workspace_path(record.cwd),
-                sandbox_options=SandboxOptions(enabled=False),
+                sandbox_options=SandboxOptions(enabled=True),
             ),
         )
         agent = await client.agents.create(options)

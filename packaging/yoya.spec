@@ -8,6 +8,7 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 spec_dir = Path(SPEC).resolve().parent
 project_root = spec_dir.parent if spec_dir.name == "packaging" else spec_dir
+version = (project_root / "VERSION").read_text(encoding="utf-8").strip()
 cursor_datas, cursor_binaries, cursor_hidden = collect_all("cursor_sdk")
 
 block_cipher = None
@@ -18,6 +19,7 @@ a = Analysis(
     binaries=cursor_binaries,
     datas=[
         (str(project_root / "public"), "public"),
+        (str(project_root / "VERSION"), "."),
         *cursor_datas,
     ],
     hiddenimports=[
@@ -39,6 +41,10 @@ a = Analysis(
         "server.discussions",
         "server.discussion_manager",
         "server.desktop_api",
+        "server.json_store",
+        "server.secret_store",
+        "server.version",
+        "keyring.backends.macOS",
         "uvicorn.logging",
         "uvicorn.loops",
         "uvicorn.loops.auto",
@@ -104,12 +110,12 @@ app = BUNDLE(
     icon=str(project_root / "packaging" / "AppIcon.icns")
     if (project_root / "packaging" / "AppIcon.icns").exists()
     else None,
-    bundle_identifier="com.yoya.app",
+    bundle_identifier="com.shinanwu.yoya",
     info_plist={
         "CFBundleName": "yoya",
         "CFBundleDisplayName": "yoya",
-        "CFBundleVersion": "1.0.5",
-        "CFBundleShortVersionString": "1.0.5",
+        "CFBundleVersion": version,
+        "CFBundleShortVersionString": version,
         # PyInstaller 默认会写成 "AppIcon.icns"（带扩展名），导致系统找不到图标
         "CFBundleIconFile": "AppIcon",
         "CFBundleIconName": "AppIcon",

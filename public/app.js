@@ -28,6 +28,7 @@ const state = {
   discussionRuntimes: {},
   defaultCwd: "",
   defaultModel: "composer-2.5",
+  version: "",
   models: [],
   needsSetup: false,
   shellVisible: true,
@@ -195,6 +196,7 @@ function handleMessage(msg) {
     case "hello":
       state.defaultCwd = msg.defaultCwd;
       state.defaultModel = msg.defaultModel;
+      state.version = msg.version || "";
       state.needsSetup = !!msg.needsSetup;
       state.shellVisible = msg.shellVisible !== false;
       $("setup-cwd").value = state.defaultCwd;
@@ -1250,14 +1252,32 @@ function buildTraceCard(segments, { open = false, streaming = false, activityTex
   const body = document.createElement("div");
   body.className = "trace-body";
   details.appendChild(body);
-  patchTraceBody(body, segments);
+  patchTraceBody(body, segments, { streaming, activityText });
   return details;
 }
 
-function patchTraceBody(bodyEl, segments) {
+function patchTraceBody(bodyEl, segments, { streaming = false, activityText = "" } = {}) {
   if (!bodyEl) return;
   const wanted = (segments || []).filter((seg) => seg.type === "thinking" || seg.type === "tool");
   let index = 0;
+
+  // 还没有任何思考/工具时，展开也应看到当前状态，避免「外面 running、里面空白」
+  if (!wanted.length && streaming) {
+    let child = bodyEl.children[0];
+    if (!child || !child.classList.contains("trace-activity")) {
+      const el = document.createElement("div");
+      el.className = "trace-activity";
+      if (child) bodyEl.insertBefore(el, child);
+      else bodyEl.appendChild(el);
+      child = el;
+    }
+    const label = String(activityText || "").trim() || "Agent 运行中…";
+    if (child.textContent !== label) child.textContent = label;
+    index = 1;
+    while (bodyEl.children.length > index) bodyEl.removeChild(bodyEl.lastChild);
+    return;
+  }
+
   for (const seg of wanted) {
     let child = bodyEl.children[index];
     if (seg.type === "thinking") {
@@ -1292,7 +1312,7 @@ function patchTraceCard(details, segments, { streaming = false, activityText = "
   const status = details.querySelector(".trace-status");
   const next = traceStatusText(segments, { streaming, activityText });
   if (status && status.textContent !== next) status.textContent = next;
-  patchTraceBody(details.querySelector(".trace-body"), segments);
+  patchTraceBody(details.querySelector(".trace-body"), segments, { streaming, activityText });
 }
 
 function assistantRenderNodes(message, { streaming = false } = {}) {
@@ -3510,6 +3530,7 @@ function openSystemSettings() {
   $("system-api-key").value = "";
   $("system-settings-error").textContent = "";
   $("system-font-size").value = localStorage.getItem(FONT_SIZE_KEY) || "medium";
+  $("system-version").textContent = state.version ? `yoya v${state.version}` : "yoya";
   $("system-settings-modal").classList.add("open");
   requestModelsIfNeeded();
 }

@@ -28,6 +28,7 @@ from .runtime import (
     stop_manager,
 )
 from .ws_hub import register_client, set_event_loop, shell_visible, unregister_client
+from .version import app_version
 
 load_dotenv_if_present()
 configure_logging()
@@ -35,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 PUBLIC = resource_root()
 APP_CONFIG = load_config()
-HOST = APP_CONFIG.host or os.environ.get("HOST", "127.0.0.1")
+HOST = "127.0.0.1"
 PORT = APP_CONFIG.port or int(os.environ.get("PORT", "3847"))
 
 
@@ -49,6 +50,31 @@ class SettingsPayload(BaseModel):
     api_key: str = ""
     default_cwd: str = ""
     default_model: str = "composer-2.5"
+
+
+class _SafeWebSocketEmitter:
+    """连接关闭后静默丢弃后台任务的迟到事件。"""
+
+    def __init__(self, ws: WebSocket) -> None:
+        self.ws = ws
+        self.closed = False
+        self._lock = asyncio.Lock()
+
+    async def __call__(self, payload: dict) -> None:
+        if self.closed:
+            return
+        async with self._lock:
+            if self.closed:
+                return
+            try:
+                await self.ws.send_text(json.dumps(payload, ensure_ascii=False))
+            except Exception:
+                self.closed = True
+                unregister_client(self.ws)
+                logger.debug("丢弃已断开 WebSocket 的迟到事件", exc_info=True)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 @asynccontextmanager
@@ -115,6 +141,7 @@ async def status():
         "url": f"http://{HOST}:{PORT}",
         "defaultCwd": APP_CONFIG.default_cwd or str(Path.home()),
         "defaultModel": APP_CONFIG.default_model,
+        "version": app_version(),
     }
 
 
@@ -141,6 +168,12 @@ async def update_settings(payload: SettingsPayload):
     if not APP_CONFIG.is_configured and not payload.api_key.strip():
         raise HTTPException(status_code=400, detail="请先填写 API Key")
 
+    previous = (
+        APP_CONFIG.api_key,
+        APP_CONFIG.default_cwd,
+        APP_CONFIG.default_model,
+    )
+
     if payload.api_key.strip():
         APP_CONFIG.api_key = payload.api_key.strip()
 
@@ -153,6 +186,14 @@ async def update_settings(payload: SettingsPayload):
         APP_CONFIG.default_model = payload.default_model.strip() or "composer-2.5"
 
     save_config(APP_CONFIG)
+    current = (
+        APP_CONFIG.api_key,
+        APP_CONFIG.default_cwd,
+        APP_CONFIG.default_model,
+    )
+    if current != previous:
+        await stop_manager()
+        await start_manager(APP_CONFIG)
     return {"ok": True, **APP_CONFIG.public_view()}
 
 
@@ -205,11 +246,7 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     register_client(ws)
     manager = get_manager()
-    send_lock = asyncio.Lock()
-
-    async def emit(payload: dict) -> None:
-        async with send_lock:
-            await ws.send_text(json.dumps(payload, ensure_ascii=False))
+    emit = _SafeWebSocketEmitter(ws)
 
     async def warmup_engine() -> None:
         nonlocal manager
@@ -313,12 +350,16 @@ async def websocket_endpoint(ws: WebSocket):
 
     async def run_list_models() -> None:
         nonlocal manager
-        manager = await ensure_manager(start_bridge=True)
-        if manager is None:
+        try:
+            manager = await ensure_manager(start_bridge=True)
+            if manager is None:
+                await emit({"type": "models", "models": []})
+                return
+            models = await manager.list_models()
+            await emit({"type": "models", "models": models})
+        except Exception:
+            logger.exception("list_models failed")
             await emit({"type": "models", "models": []})
-            return
-        models = await manager.list_models()
-        await emit({"type": "models", "models": models})
 
     await emit(
         {
@@ -329,6 +370,7 @@ async def websocket_endpoint(ws: WebSocket):
             "url": f"http://{HOST}:{PORT}",
             "shellVisible": shell_visible(),
             "engineReady": bool(get_manager() and get_manager().is_started),
+            "version": app_version(),
         }
     )
     if APP_CONFIG.is_configured:
@@ -761,6 +803,7 @@ async def websocket_endpoint(ws: WebSocket):
     except Exception:
         logger.exception("WebSocket 错误")
     finally:
+        emit.close()
         unregister_client(ws)
 
 

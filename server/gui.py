@@ -182,7 +182,6 @@ def run_gui() -> None:
     from .shutdown import cleanup_bridge_processes
 
     prepare_bridge_env()
-    cleanup_bridge_processes(bridge_state_root())
 
     config = load_config()
     host = config.host or "127.0.0.1"
@@ -191,18 +190,19 @@ def run_gui() -> None:
 
     owns_server = acquire_instance_lock()
     if not owns_server:
-        if _server_alive(host, port):
-            logger.info("已有实例运行，唤醒窗口")
-            if _activate_existing_instance(host, port):
+        # flock 会在进程退出时自动释放；拿不到锁就一定有另一个实例仍持有它。
+        # 不删除锁文件，否则会在新 inode 上拿到第二把锁，形成双实例。
+        for _ in range(30):
+            if _server_alive(host, port):
+                logger.info("已有实例运行，唤醒窗口")
+                _activate_existing_instance(host, port)
                 return
-        try:
-            _lock_path().unlink(missing_ok=True)
-        except OSError:
-            pass
-        owns_server = acquire_instance_lock()
-        if not owns_server and _server_alive(host, port):
-            _activate_existing_instance(host, port)
-            return
+            time.sleep(0.1)
+        logger.error("已有实例正在启动，但本地服务尚未就绪")
+        return
+
+    # 只有持有单实例锁的进程才能清理上次异常退出遗留的 bridge。
+    cleanup_bridge_processes(bridge_state_root())
 
     os.environ.setdefault("CURSOR_AGENT_NO_BROWSER", "1")
 

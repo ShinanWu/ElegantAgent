@@ -208,13 +208,7 @@ const AgentFSM = (() => {
         const incoming = payload.messages || [];
         const local = agent.messages;
         applyMeta(agent, payload);
-        if (payload.running) {
-          agent.phase = Phase.RUNNING;
-        }
-        if (incoming.length < local.length) {
-          result.needsResync = false;
-          break;
-        }
+        syncServerRunning(agent, !!payload.running, result);
         const same =
           incoming.length === local.length &&
           (local.length === 0 || local.every((m, i) => messagesEquivalent(m, incoming[i])));
@@ -303,8 +297,13 @@ const AgentFSM = (() => {
   }
 
   function syncServerRunning(agent, running, result) {
-    if (running && agent.phase === Phase.IDLE) {
-      agent.phase = Phase.RUNNING;
+    const next = running ? Phase.RUNNING : Phase.IDLE;
+    if (agent.phase !== next) {
+      agent.phase = next;
+      if (!running) {
+        clearStream(agent);
+        result.streamChanged = true;
+      }
     }
   }
 

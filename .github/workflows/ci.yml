@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Compile Python
+        run: python -m compileall -q launcher.py run.py server scripts
+
+      - name: Check browser JavaScript syntax
+        run: |
+          node --check public/app.js
+          node --check public/agent-fsm.js
+
+      - name: Run regression verification
+        run: python scripts/verify_regressions.py
+
+      - name: Run summary verification
+        run: python scripts/verify_summary_feature.py
+
+      - name: Run conversation restore verification
+        run: python scripts/verify_conversation_restore.py
+
+      - name: Build arm64 app smoke test
+        run: pyinstaller --noconfirm --clean packaging/yoya.spec
+
+      - name: Verify bundle metadata
+        run: |
+          test "$(uname -m)" = "arm64"
+          test "$(defaults read "$PWD/dist/yoya.app/Contents/Info" CFBundleIdentifier)" = "com.shinanwu.yoya"
+          test "$(defaults read "$PWD/dist/yoya.app/Contents/Info" CFBundleShortVersionString)" = "$(tr -d '[:space:]' < VERSION)"

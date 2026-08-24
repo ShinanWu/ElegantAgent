@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from .paths import discussions_file
+from .json_store import load_json_object, save_json_object
 
 
 @dataclass
@@ -52,14 +52,19 @@ def new_discussion(agent_id: str, anchor: dict[str, Any]) -> Discussion:
 
 def load_discussions() -> dict[str, Discussion]:
     path = discussions_file()
-    if not path.exists():
-        return {}
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    return {did: Discussion(**data) for did, data in raw.items()}
+    raw = load_json_object(path, label="讨论数据")
+    records: dict[str, Discussion] = {}
+    for did, data in raw.items():
+        try:
+            if not isinstance(data, dict):
+                raise TypeError("讨论记录必须是对象")
+            records[did] = Discussion(**data)
+        except (TypeError, ValueError):
+            continue
+    return records
 
 
 def save_discussions(discussions: dict[str, Discussion]) -> None:
     path = discussions_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {did: asdict(rec) for did, rec in discussions.items()}
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_json_object(path, payload)

@@ -832,6 +832,12 @@ body {
   padding: 8px 0 4px 16px;
 }
 
+.trace-activity {
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .trace-card + .stream-text {
   margin-top: 8px;
 }

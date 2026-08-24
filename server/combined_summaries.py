@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from .paths import combined_summaries_file
+from .json_store import load_json_object, save_json_object
 
 
 @dataclass
@@ -46,14 +46,19 @@ def new_combined_summary(agent_id: str, discussion_ids: list[str]) -> CombinedSu
 
 def load_combined_summaries() -> dict[str, CombinedSummary]:
     path = combined_summaries_file()
-    if not path.exists():
-        return {}
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    return {cid: CombinedSummary(**data) for cid, data in raw.items()}
+    raw = load_json_object(path, label="合并总结数据")
+    records: dict[str, CombinedSummary] = {}
+    for cid, data in raw.items():
+        try:
+            if not isinstance(data, dict):
+                raise TypeError("合并总结记录必须是对象")
+            records[cid] = CombinedSummary(**data)
+        except (TypeError, ValueError):
+            continue
+    return records
 
 
 def save_combined_summaries(summaries: dict[str, CombinedSummary]) -> None:
     path = combined_summaries_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {cid: asdict(rec) for cid, rec in summaries.items()}
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_json_object(path, payload)

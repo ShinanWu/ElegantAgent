@@ -6,8 +6,16 @@ VENDOR="$ROOT/public/vendor"
 MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
 DIST="$ROOT/dist"
 APP_NAME="yoya.app"
+VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 
 cd "$ROOT"
+
+if [[ "$(uname -m)" != "arm64" ]]; then
+  echo "错误: 当前发布包仅支持 Apple Silicon，请在 arm64 macOS 上构建" >&2
+  exit 1
+fi
+
+echo "==> 构建 yoya v$VERSION (arm64)"
 
 echo "==> 下载前端 vendor 资源"
 mkdir -p "$VENDOR"
@@ -43,6 +51,10 @@ echo "==> 制作 PKG 安装包"
 bash scripts/build_installer.sh
 
 if [[ -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_PASSWORD:-}" ]]; then
+  if [[ -z "${CODESIGN_IDENTITY:-}" || -z "${INSTALLER_SIGN_IDENTITY:-}" ]]; then
+    echo "错误: 公证要求同时设置 CODESIGN_IDENTITY 与 INSTALLER_SIGN_IDENTITY" >&2
+    exit 1
+  fi
   echo "==> 公证安装包"
   xcrun notarytool submit "$DIST/yoya.pkg" \
     --apple-id "$APPLE_ID" \

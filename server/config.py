@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from .json_store import load_json_object, save_json_object
 from .paths import config_file
+from .secret_store import load_cursor_api_key, save_cursor_api_key
+
+
+def _restrict_config_file(path) -> None:
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 @dataclass
@@ -32,29 +40,35 @@ class AppConfig:
 
 def load_config() -> AppConfig:
     path = config_file()
-    if not path.is_file():
-        return AppConfig()
+    raw = load_json_object(path, label="应用配置")
+    legacy_key = str(raw.get("api_key", "")).strip()
+    api_key = load_cursor_api_key() or legacy_key
+
+    # 旧版本把 API Key 写在 config.json。迁移成功后立即移除明文。
+    if legacy_key and save_cursor_api_key(legacy_key):
+        raw.pop("api_key", None)
+        save_json_object(path, raw)
+        _restrict_config_file(path)
+
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
         return AppConfig(
-            api_key=str(raw.get("api_key", "")).strip(),
+            api_key=api_key,
             default_cwd=str(raw.get("default_cwd", "")).strip(),
             default_model=str(raw.get("default_model", "composer-2.5")).strip() or "composer-2.5",
-            host=str(raw.get("host", "127.0.0.1")).strip() or "127.0.0.1",
+            # 桌面应用没有远程访问场景，固定回环地址，避免旧配置意外暴露服务。
+            host="127.0.0.1",
             port=int(raw.get("port", 3847)),
         )
-    except (json.JSONDecodeError, OSError, TypeError, ValueError):
-        return AppConfig()
+    except (TypeError, ValueError):
+        return AppConfig(api_key=api_key)
 
 
 def save_config(config: AppConfig) -> None:
     path = config_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(asdict(config), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    payload = asdict(config)
+    secret = str(payload.pop("api_key", "") or "").strip()
+    if secret and not save_cursor_api_key(secret):
+        # 非 macOS 开发环境或钥匙串不可用时的最小权限回退。
+        payload["api_key"] = secret
+    save_json_object(path, payload)
+    _restrict_config_file(path)
