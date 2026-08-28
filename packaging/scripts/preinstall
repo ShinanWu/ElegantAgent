@@ -1,0 +1,37 @@
+#!/bin/sh
+# 安装升级包前终止当前登录用户仍在后台运行的旧版 yoya。
+# yoya 的关闭按钮会隐藏窗口；若不退出进程，新安装的实例会唤醒旧进程。
+
+set -u
+
+console_user="$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)"
+if [ -z "$console_user" ] || [ "$console_user" = "root" ] || [ "$console_user" = "loginwindow" ]; then
+  exit 0
+fi
+
+user_id="$(/usr/bin/id -u "$console_user" 2>/dev/null || true)"
+if [ -z "$user_id" ]; then
+  exit 0
+fi
+
+pids="$(/usr/bin/pgrep -u "$user_id" -x yoya 2>/dev/null || true)"
+if [ -z "$pids" ]; then
+  exit 0
+fi
+
+/bin/kill -TERM $pids 2>/dev/null || true
+
+attempt=0
+while /usr/bin/pgrep -u "$user_id" -x yoya >/dev/null 2>&1; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 50 ]; then
+    remaining="$(/usr/bin/pgrep -u "$user_id" -x yoya 2>/dev/null || true)"
+    if [ -n "$remaining" ]; then
+      /bin/kill -KILL $remaining 2>/dev/null || true
+    fi
+    break
+  fi
+  /bin/sleep 0.1
+done
+
+exit 0

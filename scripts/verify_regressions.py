@@ -233,6 +233,8 @@ def verify_release_contract() -> None:
     version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     spec = (ROOT / "packaging" / "yoya.spec").read_text(encoding="utf-8")
     distribution = (ROOT / "packaging" / "distribution.xml").read_text(encoding="utf-8")
+    build_installer = (ROOT / "scripts" / "build_installer.sh").read_text(encoding="utf-8")
+    preinstall = (ROOT / "packaging" / "scripts" / "preinstall").read_text(encoding="utf-8")
     main_manager = (ROOT / "server" / "agent_manager.py").read_text(encoding="utf-8")
     discussion_manager = (ROOT / "server" / "discussion_manager.py").read_text(encoding="utf-8")
     index_template = (ROOT / "public" / "index.html").read_text(encoding="utf-8")
@@ -246,6 +248,12 @@ def verify_release_contract() -> None:
     check("版本符合语义化格式", len(version.split(".")) == 3 and all(part.isdigit() for part in version.split(".")))
     check("应用包标识唯一", 'bundle_identifier="com.shinanwu.yoya"' in spec)
     check("安装包标识一致", "com.shinanwu.yoya" in distribution and "__VERSION__" in distribution)
+    check(
+        "安装升级前退出旧后台实例",
+        '--scripts "$PACKAGE_SCRIPTS"' in build_installer
+        and 'pgrep -u "$user_id" -x yoya' in preinstall
+        and "/bin/kill -TERM $pids" in preinstall,
+    )
     check(
         "入口页替换静态资源版本",
         "__YOYA_VERSION__" in index_template

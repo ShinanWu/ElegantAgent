@@ -11,6 +11,7 @@ COMPONENT_PKG="$DIST/yoya-component.pkg"
 PRODUCT_PKG="$DIST/yoya.pkg"
 UNSIGNED_PRODUCT_PKG="$DIST/yoya-unsigned.pkg"
 COMPONENT_PLIST="$ROOT/packaging/component.plist"
+PACKAGE_SCRIPTS="$ROOT/packaging/scripts"
 
 APP_BUNDLE="$DIST/$APP_NAME"
 if [ ! -d "$APP_BUNDLE" ]; then
@@ -31,6 +32,7 @@ echo "==> 制作组件 PKG（固定安装到 /Applications）"
 pkgbuild \
   --root "$STAGING" \
   --component-plist "$COMPONENT_PLIST" \
+  --scripts "$PACKAGE_SCRIPTS" \
   --install-location /Applications \
   --identifier "$PKG_ID" \
   --version "$PKG_VERSION" \
