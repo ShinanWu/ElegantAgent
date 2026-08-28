@@ -229,16 +229,35 @@ def verify_secret_migration() -> None:
 
 
 def verify_release_contract() -> None:
-    print("==> 8. 版本、沙箱与包标识一致")
+    print("==> 8. 版本、缓存、沙箱与包标识一致")
     version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     spec = (ROOT / "packaging" / "yoya.spec").read_text(encoding="utf-8")
     distribution = (ROOT / "packaging" / "distribution.xml").read_text(encoding="utf-8")
     main_manager = (ROOT / "server" / "agent_manager.py").read_text(encoding="utf-8")
     discussion_manager = (ROOT / "server" / "discussion_manager.py").read_text(encoding="utf-8")
+    index_template = (ROOT / "public" / "index.html").read_text(encoding="utf-8")
+    gui = (ROOT / "server" / "gui.py").read_text(encoding="utf-8")
+
+    from server import app as app_module
+
+    index_response = asyncio.run(app_module.index())
+    rendered_index = index_response.body.decode("utf-8")
 
     check("版本符合语义化格式", len(version.split(".")) == 3 and all(part.isdigit() for part in version.split(".")))
     check("应用包标识唯一", 'bundle_identifier="com.shinanwu.yoya"' in spec)
     check("安装包标识一致", "com.shinanwu.yoya" in distribution and "__VERSION__" in distribution)
+    check(
+        "入口页替换静态资源版本",
+        "__YOYA_VERSION__" in index_template
+        and "__YOYA_VERSION__" not in rendered_index
+        and f"?v={version}" in rendered_index,
+    )
+    check(
+        "入口页禁止 WebView 缓存",
+        index_response.headers.get("cache-control")
+        == "no-store, no-cache, must-revalidate, max-age=0",
+    )
+    check("原生窗口 URL 随版本变化", "_versioned_ui_url(host, port)" in gui)
     check("主 Agent 启用沙箱", "SandboxOptions(enabled=True)" in main_manager)
     check(
         "讨论 Agent 只开放读取工具",

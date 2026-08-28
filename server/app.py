@@ -9,8 +9,8 @@ import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,11 @@ PUBLIC = resource_root()
 APP_CONFIG = load_config()
 HOST = "127.0.0.1"
 PORT = APP_CONFIG.port or int(os.environ.get("PORT", "3847"))
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
 
 
 class SetupPayload(BaseModel):
@@ -111,9 +116,20 @@ app = FastAPI(title="yoya", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=PUBLIC), name="static")
 
 
-@app.get("/")
+@app.middleware("http")
+async def disable_frontend_cache(request: Request, call_next):
+    """本地 WebView 不得跨版本复用入口页或前端资源。"""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers.update(NO_CACHE_HEADERS)
+    return response
+
+
+@app.get("/", response_class=HTMLResponse)
 async def index():
-    return FileResponse(PUBLIC / "index.html")
+    template = (PUBLIC / "index.html").read_text(encoding="utf-8")
+    html = template.replace("__YOYA_VERSION__", app_version())
+    return HTMLResponse(html, headers=NO_CACHE_HEADERS)
 
 
 @app.post("/api/activate")

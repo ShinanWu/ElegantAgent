@@ -11,9 +11,11 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
 from .macos_shell import MacAppShell
 from .shutdown import bind_uvicorn, shutdown_all
+from .version import app_version
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,11 @@ def prepare_shutdown() -> None:
 
 def _server_url(host: str, port: int) -> str:
     return f"http://{host}:{port}"
+
+
+def _versioned_ui_url(host: str, port: int) -> str:
+    version = quote(app_version(), safe="")
+    return f"{_server_url(host, port)}/?app-version={version}"
 
 
 def _server_alive(host: str, port: int) -> bool:
@@ -186,7 +193,8 @@ def run_gui() -> None:
     config = load_config()
     host = config.host or "127.0.0.1"
     port = config.port or 3847
-    url = _server_url(host, port)
+    # 每个版本使用不同的主文档 URL，绕过旧版 WKWebView 已持久化的页面缓存。
+    url = _versioned_ui_url(host, port)
 
     owns_server = acquire_instance_lock()
     if not owns_server:

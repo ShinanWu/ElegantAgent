@@ -2,6 +2,13 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## [1.1.1] - 2026-08-28
+
+### Fixed
+
+- Prevent the macOS WebView from showing an older bundled interface after an app upgrade.
+- Version all frontend resource URLs and disable caching for local interface assets.
+
 ## [1.1.0] - 2026-08-24
 
 ### Added
@@ -34,5 +41,6 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Renamed the app and data directory to yoya.
 - Sent original images to Cursor and persisted run errors in conversations.
 
+[1.1.1]: https://github.com/ShinanWu/ElegantAgent/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ShinanWu/ElegantAgent/compare/v1.0.5...v1.1.0
 [1.0.5]: https://github.com/ShinanWu/ElegantAgent/releases/tag/v1.0.5
