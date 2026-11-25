@@ -80,6 +80,13 @@ class _AgentSilentError(CursorAgentError):
         )
 
 
+class _AgentRunFailedError(CursorAgentError):
+    """Run 已明确失败。保留 SDK 的错误信息，不再当成会话失效重试。"""
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message, code=code or "run_failed", is_retryable=False)
+
+
 class AgentManager:
     def __init__(self, api_key: str, default_cwd: str, default_model: str) -> None:
         self.api_key = api_key
@@ -174,6 +181,8 @@ class AgentManager:
 
     @staticmethod
     def _is_recoverable_error(err: BaseException) -> bool:
+        if isinstance(err, _AgentRunFailedError):
+            return False
         return AgentManager._is_bridge_error(err) or AgentManager._is_stale_agent_error(err)
 
     @staticmethod
@@ -188,6 +197,8 @@ class AgentManager:
     def _format_run_error(err: BaseException | None) -> str:
         if err is None:
             return "Agent 运行失败，请稍后重试。"
+        if isinstance(err, _AgentRunFailedError):
+            return err.message or "Agent 运行失败，请稍后重试。"
         if isinstance(err, _AgentSilentError):
             return (
                 "暂时没能接上对话。请再发一次消息；"
@@ -768,6 +779,21 @@ class AgentManager:
             append_text_segment(segments, result_text)
             return self._assistant_message_from_segments(segments)
 
+        status = str(getattr(result, "status", "") or "").lower()
+        error_message = str(getattr(result, "error_message", "") or "").strip()
+        error_code = str(getattr(result, "error_code", "") or "").strip()
+        if status in {"error", "failed"} or error_message:
+            detail = error_message or "Agent 运行失败，请稍后重试。"
+            logger.warning(
+                "Agent %s 运行失败 status=%s code=%s run=%s: %s",
+                agent_id,
+                status or "?",
+                error_code or "?",
+                getattr(result, "id", ""),
+                detail,
+            )
+            raise _AgentRunFailedError(detail, code=error_code or None)
+
         try:
             fallback = await self._conversation_fallback_text(run)
         except Exception:
@@ -780,7 +806,7 @@ class AgentManager:
         logger.warning(
             "Agent %s 运行结束但无输出 (status=%s, run=%s)，视为会话失效并重试",
             agent_id,
-            getattr(result, "status", ""),
+            status or "?",
             getattr(result, "id", ""),
         )
         raise _AgentSilentError()

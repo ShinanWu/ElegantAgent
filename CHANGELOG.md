@@ -2,6 +2,12 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## [1.1.4] - 2026-11-25
+
+### Fixed
+
+- Show the Cursor SDK error when a run fails, instead of retrying it as an expired session.
+
 ## [1.1.3] - 2026-11-25
 
 ### Changed
@@ -53,6 +59,7 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Renamed the app and data directory to yoya.
 - Sent original images to Cursor and persisted run errors in conversations.
 
+[1.1.4]: https://github.com/ShinanWu/ElegantAgent/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/ShinanWu/ElegantAgent/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/ShinanWu/ElegantAgent/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/ShinanWu/ElegantAgent/compare/v1.1.0...v1.1.1

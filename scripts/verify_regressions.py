@@ -162,6 +162,66 @@ def verify_corrupt_storage() -> None:
                     check(f"{name} 容错", result == {})
 
 
+def verify_explicit_run_failure() -> None:
+    print("==> 5b. 明确失败不当成会话失效重试")
+    from server.agent_manager import AgentManager, _AgentRunFailedError, _AgentSilentError
+
+    manager = AgentManager.__new__(AgentManager)
+
+    class _Result:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    async def finalize(result):
+        return await manager._finalize_assistant_message(
+            segments=[],
+            result=result,
+            run=None,
+            record=None,
+            agent_id="a1",
+        )
+
+    try:
+        asyncio.run(
+            finalize(
+                _Result(
+                    status="error",
+                    result="",
+                    id="run-1",
+                    error_code="unauthenticated",
+                    error_message="Invalid API key",
+                )
+            )
+        )
+        check("失败结果抛出明确错误", False, "没有抛出异常")
+    except _AgentRunFailedError as err:
+        check("失败结果抛出明确错误", err.message == "Invalid API key")
+        check("明确失败不可重试", not manager._is_recoverable_error(err))
+        check("错误文案保留 SDK 信息", manager._format_run_error(err) == "Invalid API key")
+    except Exception as err:
+        check("失败结果抛出明确错误", False, type(err).__name__)
+
+    class _EmptyRun:
+        async def conversation(self):
+            return []
+
+    try:
+        asyncio.run(
+            manager._finalize_assistant_message(
+                segments=[],
+                result=_Result(status="finished", result="", id="run-2"),
+                run=_EmptyRun(),
+                record=None,
+                agent_id="a1",
+            )
+        )
+        check("无输出仍视为会话失效", False, "没有抛出异常")
+    except _AgentSilentError:
+        check("无输出仍视为会话失效", True)
+    except Exception as err:
+        check("无输出仍视为会话失效", False, type(err).__name__)
+
+
 def verify_recovery_prompt() -> None:
     print("==> 5. 会话重建历史回填")
     from cursor_sdk import UserMessage
@@ -279,6 +339,7 @@ def main() -> int:
     verify_settings_restart()
     verify_late_websocket_events()
     verify_corrupt_storage()
+    verify_explicit_run_failure()
     verify_recovery_prompt()
     verify_single_instance_order()
     verify_secret_migration()
