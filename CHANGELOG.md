@@ -2,6 +2,12 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## [1.1.3] - 2026-11-25
+
+### Changed
+
+- Upgrade Cursor Python SDK from 1.0.28 to 1.5.0, including the bundled local agent bridge.
+
 ## [1.1.2] - 2026-08-28
 
 ### Fixed
@@ -47,6 +53,7 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 - Renamed the app and data directory to yoya.
 - Sent original images to Cursor and persisted run errors in conversations.
 
+[1.1.3]: https://github.com/ShinanWu/ElegantAgent/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/ShinanWu/ElegantAgent/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/ShinanWu/ElegantAgent/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/ShinanWu/ElegantAgent/compare/v1.0.5...v1.1.0
